@@ -96,10 +96,20 @@ async function handleSession(request, env) {
   )
 }
 
+async function compressText(text) {
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'))
+  return new Uint8Array(await new Response(stream).arrayBuffer())
+}
+
+async function decompressText(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))
+  return new Response(stream).text()
+}
+
 async function readCurrent(env) {
-  const object = await env.BUCKET.get('current.json')
-  if (!object) return { rows: [], metadata: {} }
-  return JSON.parse(await object.text())
+  const stored = await env.DATA.get('current', { type: 'arrayBuffer' })
+  if (!stored) return { rows: [], metadata: {} }
+  return JSON.parse(await decompressText(stored))
 }
 
 async function handleOrders(request, env) {
@@ -206,9 +216,14 @@ async function handleUpload(request, env) {
     },
   }
 
-  const current = await env.BUCKET.get('current.json')
-  if (current) await env.BUCKET.put('previous.json', current.body, { httpMetadata: { contentType: 'application/json' } })
-  await env.BUCKET.put('current.json', JSON.stringify(payload), { httpMetadata: { contentType: 'application/json' } })
+  const compressed = await compressText(JSON.stringify(payload))
+  if (compressed.byteLength > 24 * 1024 * 1024) {
+    return json({ error: 'La base procesada supera la capacidad segura de almacenamiento.' }, 413)
+  }
+
+  const current = await env.DATA.get('current', { type: 'arrayBuffer' })
+  if (current) await env.DATA.put('previous', current)
+  await env.DATA.put('current', compressed)
 
   return json({ ok: true, metadata: payload.metadata })
 }
