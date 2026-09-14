@@ -17,7 +17,7 @@ Este repositorio no contiene la base operativa ni credenciales. La primera base 
 1. Conecta este repositorio desde **Workers & Pages**.
 2. Build command: `npm run build`.
 3. Deploy command: `npm run deploy`.
-4. Crea un namespace KV y enlázalo con el nombre `DATA`.
+4. Permite que Wrangler aprovisione automáticamente el namespace KV `DATA`.
 5. Crea estos secretos:
    - `VIEWER_PASSWORD`
    - `ADMIN_PASSWORD`
