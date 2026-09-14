@@ -1,0 +1,28 @@
+name: Validar aplicación
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+      - name: Configurar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package.json
+      - name: Instalar dependencias
+        run: npm install
+      - name: Compilar frontend
+        run: npm run build
+      - name: Validar configuración de Cloudflare
+        run: npx wrangler deploy --dry-run
