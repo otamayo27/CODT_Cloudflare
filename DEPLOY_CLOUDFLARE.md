@@ -1,4 +1,4 @@
-# Despliegue en Cloudflare
+# Despliegue en Cloudflare sin suscripción R2
 
 ## 1. Crear el proyecto
 
@@ -11,15 +11,11 @@ Configura:
 - Deploy command: `npx wrangler deploy`
 - Root directory: vacío
 
-## 2. Crear el almacenamiento R2
+## 2. Almacenamiento gratuito
 
-Crea un bucket R2 llamado exactamente:
+La aplicación usa **Workers KV**, no R2. El archivo `wrangler.jsonc` declara el binding `DATA`.
 
-```
-geooperacion-data
-```
-
-El archivo `wrangler.jsonc` lo vincula al Worker con el binding `BUCKET`. Si el despliegue ofrece aprovisionarlo automáticamente, acepta la creación.
+Durante el primer despliegue, Cloudflare/Wrangler debe ofrecer crear o aprovisionar el namespace automáticamente. Acepta esa creación. No es necesario activar una suscripción R2.
 
 ## 3. Crear secretos
 
@@ -46,6 +42,6 @@ Confirma:
 3. El administrador puede cargar un Excel válido.
 4. La página muestra fecha, responsable y número de órdenes.
 5. Al recargar, los registros permanecen disponibles.
-6. El bucket contiene `current.json`; luego de la segunda carga también contiene `previous.json`.
+6. El namespace KV contiene `current`; luego de la segunda carga también contiene `previous`.
 
-La base anterior se sustituye únicamente después de validar completamente el nuevo archivo.
+La información se comprime antes de guardarse. El Excel original se procesa en memoria y no se conserva.
