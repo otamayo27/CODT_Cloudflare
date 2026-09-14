@@ -3,17 +3,18 @@
   "name": "codt-cloudflare",
   "main": "worker/index.js",
   "compatibility_date": "2026-09-14",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     "run_worker_first": true
   },
-  "r2_buckets": [
+  "kv_namespaces": [
     {
-      "binding": "BUCKET",
-      "bucket_name": "geooperacion-data"
+      "binding": "DATA"
     }
   ],
   "observability": {
