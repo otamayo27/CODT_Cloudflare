@@ -29,7 +29,7 @@ async function apiJson(url, options = {}) {
 
 async function loadOrders(signal) {
   const result = await apiJson(`/api/orders?v=${Date.now()}`, { signal })
-  if (!Array.isArray(result.rows) || !result.rows.length) throw new Error('La base operativa no contiene registros.')
+  if (!Array.isArray(result.rows)) throw new Error('La respuesta de la base operativa no es válida.')
   return {
     rows: result.rows.filter(row => clean(row.Orden)),
     metadata: result.metadata || {},
