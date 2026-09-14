@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import * as XLSX from 'xlsx'
 import { CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet'
 import {
   AlertTriangle, ArrowLeft, Building2, CheckCircle2, ChevronRight,
@@ -18,9 +19,11 @@ async function apiJson(url, options = {}) {
     headers: { 'Cache-Control': 'no-cache' },
     ...options,
   })
-  const body = await response.json().catch(() => ({}))
+  const responseText = await response.text()
+  let body = {}
+  try { body = responseText ? JSON.parse(responseText) : {} } catch { body = {} }
   if (!response.ok) {
-    const error = new Error(body.error || 'No se pudo completar la solicitud.')
+    const error = new Error(body.error || `El servidor rechazó la solicitud (HTTP ${response.status}).`)
     error.status = response.status
     throw error
   }
@@ -89,8 +92,70 @@ function AccessScreen({ onAuthenticated }) {
   return <main className="state-shell access-shell"><form className="state-card access-card" onSubmit={submit}><div className="app-logo"><LockKeyhole size={29}/></div><span className="eyebrow">Acceso operativo</span><h1>GeoOperación</h1><p>Ingresa la contraseña compartida para consultar las órdenes.</p><label className="access-field"><span>Contraseña</span><input type="password" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="current-password" required autoFocus/></label>{message&&<div className="form-error">{message}</div>}<button className="primary-button full-button" disabled={busy}>{busy?'Verificando…':'Ingresar'}</button><small>La sesión permanecerá activa durante 30 días en este dispositivo.</small></form></main>
 }
 
-function fileToBase64(file) {
-  return new Promise((resolve,reject)=>{ const reader=new FileReader(); reader.onload=()=>resolve(String(reader.result).split(',')[1]||''); reader.onerror=()=>reject(new Error('No se pudo leer el archivo.')); reader.readAsDataURL(file) })
+const UPLOAD_REQUIRED = ['Orden actual', 'Puesto de trabajo responsable en medidas de mantenimiento', 'Clase de orden', 'Clase de actividad PM']
+
+function firstUploadValue(row, keys) {
+  for (const key of keys) {
+    const value = row[key]
+    if (value !== undefined && value !== null && String(value).trim() !== '') return value
+  }
+  return ''
+}
+
+function normalizeUploadValue(value) {
+  return value instanceof Date && !Number.isNaN(value.getTime())
+    ? value.toISOString().slice(0, 10)
+    : value
+}
+
+function normalizeUploadRow(row) {
+  return {
+    Orden: firstUploadValue(row, ['Orden actual', 'Orden', 'Número de orden']),
+    CLIENTE: firstUploadValue(row, ['Nombre completo', 'CLIENTE']),
+    'Pto.tbjo.resp.': firstUploadValue(row, ['Puesto de trabajo responsable en medidas de mantenimiento', 'Pto.tbjo.resp.']),
+    DEADLINE: normalizeUploadValue(firstUploadValue(row, ['DEADLINE', 'Fecha entrada'])),
+    Calle: firstUploadValue(row, ['Calle', 'Calle 4']),
+    Distrito: firstUploadValue(row, ['Distrito', 'Población']),
+    'Status usuario ORDEN': firstUploadValue(row, ['Status Usuario Orden', 'Status usuario ORDEN']),
+    'TIPO MEDIDOR': firstUploadValue(row, ['Denominación de tipo del fabricante', 'TIPO MEDIDOR']),
+    'Latitud recomendada': firstUploadValue(row, ['Latitud recomendada', 'Latitud']),
+    'Longitud recomendada': firstUploadValue(row, ['Longitud recomendada', 'Longitud']),
+    'Transformador DS': firstUploadValue(row, ['Transformador DS', 'Placa transformador']),
+    'Medidor MD': firstUploadValue(row, ['Medidor MD', 'Número de serie']),
+    'Equipo CT': firstUploadValue(row, ['Equipo CT', 'Número de equipo']),
+    Descripción: firstUploadValue(row, ['Texto cabecera de la orden', 'Clase de actividad PM', 'Descripción']),
+    'Tipo de orden': firstUploadValue(row, ['Unnamed', 'Clase de orden']),
+    'Clase de orden': firstUploadValue(row, ['Clase de orden']),
+    'Clase de actividad PM': firstUploadValue(row, ['Clase de actividad PM']),
+    'Texto cabecera de la orden': firstUploadValue(row, ['Texto cabecera de la orden']),
+    'Teléfono principal': firstUploadValue(row, ['Teléfono principal']),
+    'Referencia textual': firstUploadValue(row, ['Referencia textual']),
+    'Fuente coordenada': firstUploadValue(row, ['Fuente coordenada']),
+    Confianza: firstUploadValue(row, ['Confianza']),
+    'ID fuente': firstUploadValue(row, ['ID fuente']),
+    'Orden previa': firstUploadValue(row, ['Orden previa']),
+    Contratista: firstUploadValue(row, ['Contratista']),
+    'Condiciones conexion': firstUploadValue(row, ['Condiciones conexion', 'Condiciones conexión']),
+  }
+}
+
+async function parseOperationalFile(file) {
+  const bytes = await file.arrayBuffer()
+  const workbook = XLSX.read(bytes, { type: 'array', cellDates: true })
+  const sheetName = workbook.SheetNames.find(name => name.toUpperCase().includes('BASE CONSOLIDADA'))
+    || workbook.SheetNames.find(name => name.toUpperCase().includes('BASE OPERATIVA'))
+    || workbook.SheetNames[0]
+  if (!sheetName) throw new Error('El archivo no contiene hojas.')
+
+  const rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '', raw: true })
+  if (!rawRows.length) throw new Error('La hoja no contiene órdenes.')
+
+  const missing = UPLOAD_REQUIRED.filter(column => !(column in rawRows[0]))
+  if (missing.length) throw new Error(`Faltan columnas obligatorias: ${missing.join(', ')}.`)
+
+  const rows = rawRows.map(normalizeUploadRow).filter(row => clean(row.Orden))
+  if (!rows.length) throw new Error('La hoja no contiene órdenes válidas.')
+  return { rows, sheetName }
 }
 
 function AdminPanel({ initialRole, onClose, onUploaded }) {
@@ -102,7 +167,7 @@ function AdminPanel({ initialRole, onClose, onUploaded }) {
   const [success,setSuccess]=useState('')
   const [busy,setBusy]=useState(false)
   const unlock=async event=>{event.preventDefault();setBusy(true);setMessage('');try{await apiJson('/api/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password,role:'admin'})});setUnlocked(true);setPassword('')}catch(error){setMessage(error.message)}finally{setBusy(false)}}
-  const upload=async event=>{event.preventDefault();if(!file)return setMessage('Selecciona el archivo Excel.');if(file.size>12*1024*1024)return setMessage('El archivo supera el límite de 12 MB.');setBusy(true);setMessage('');setSuccess('');try{const result=await apiJson('/api/upload',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({filename:file.name,uploadedBy,fileBase64:await fileToBase64(file)})});setSuccess(`Base actualizada: ${result.metadata.recordCount} órdenes procesadas.`);setFile(null);await onUploaded(result.metadata)}catch(error){setMessage(error.message)}finally{setBusy(false)}}
+  const upload=async event=>{event.preventDefault();if(!file)return setMessage('Selecciona el archivo Excel.');if(file.size>12*1024*1024)return setMessage('El archivo supera el límite de 12 MB.');setBusy(true);setMessage('');setSuccess('');try{const parsed=await parseOperationalFile(file);const result=await apiJson('/api/upload',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({filename:file.name,uploadedBy,rows:parsed.rows,sheetName:parsed.sheetName})});setSuccess(`Base actualizada: ${result.metadata.recordCount} órdenes procesadas.`);setFile(null);await onUploaded(result.metadata)}catch(error){setMessage(error.message)}finally{setBusy(false)}}
   return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><section className="admin-modal" role="dialog" aria-modal="true"><button className="modal-close" onClick={onClose}><X size={20}/></button><div className="admin-heading"><div className="admin-icon"><UploadCloud size={24}/></div><div><span className="eyebrow">Gestión de datos</span><h2>Administrar base</h2></div></div>{!unlocked?<form onSubmit={unlock} className="admin-form"><p>Ingresa la clave administrativa para habilitar la carga.</p><label className="access-field"><span>Clave administrativa</span><input type="password" value={password} onChange={e=>setPassword(e.target.value)} required autoFocus/></label>{message&&<div className="form-error">{message}</div>}<button className="primary-button full-button" disabled={busy}>{busy?'Verificando…':'Continuar'}</button></form>:<form onSubmit={upload} className="admin-form"><p>La carga sustituirá la base actual únicamente después de superar todas las validaciones.</p><label className="access-field"><span>Responsable de la carga</span><input value={uploadedBy} onChange={e=>setUploadedBy(e.target.value)} placeholder="Nombre y apellido" required/></label><label className="upload-zone"><UploadCloud size={28}/><strong>{file?file.name:'Seleccionar Base Operativa Consolidada'}</strong><span>Formatos .xlsx, .xlsm o .xls · máximo 12 MB</span><input type="file" accept=".xlsx,.xlsm,.xls" onChange={e=>setFile(e.target.files?.[0]||null)} required/></label>{message&&<div className="form-error">{message}</div>}{success&&<div className="form-success"><CheckCircle2 size={18}/>{success}</div>}<button className="primary-button full-button" disabled={busy}>{busy?'Validando y publicando…':'Actualizar base'}</button></form>}</section></div>
 }
 
