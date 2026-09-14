@@ -1,9 +1,5 @@
-import * as XLSX from 'xlsx'
-
 const COOKIE = 'geo_session'
 const TTL_SECONDS = 60 * 60 * 24 * 30
-const MAX_BYTES = 12 * 1024 * 1024
-const REQUIRED = ['Orden actual', 'Puesto de trabajo responsable en medidas de mantenimiento', 'Clase de orden', 'Clase de actividad PM']
 const encoder = new TextEncoder()
 
 function json(body, status = 200, headers = {}) {
@@ -120,83 +116,50 @@ async function handleOrders(request, env) {
   return json({ ...current, viewerRole: role })
 }
 
-function normalizeValue(value) {
-  return value instanceof Date && !Number.isNaN(value.getTime())
-    ? value.toISOString().slice(0, 10)
-    : value
-}
-
-function first(row, keys) {
-  for (const key of keys) {
-    const value = row[key]
-    if (value !== undefined && value !== null && String(value).trim() !== '') return value
-  }
-  return ''
-}
-
-function normalizeRow(row) {
-  const normalized = Object.fromEntries(
-    Object.entries(row).map(([key, value]) => [key, normalizeValue(value)])
-  )
-  normalized.Orden = first(row, ['Orden actual', 'Orden', 'Número de orden'])
-  normalized.CLIENTE = first(row, ['Nombre completo', 'CLIENTE'])
-  normalized['Pto.tbjo.resp.'] = first(row, ['Puesto de trabajo responsable en medidas de mantenimiento', 'Pto.tbjo.resp.'])
-  normalized.DEADLINE = first(row, ['DEADLINE', 'Fecha entrada'])
-  normalized.Calle = first(row, ['Calle', 'Calle 4'])
-  normalized.Distrito = first(row, ['Distrito', 'Población'])
-  normalized['Status usuario ORDEN'] = first(row, ['Status Usuario Orden', 'Status usuario ORDEN'])
-  normalized['TIPO MEDIDOR'] = first(row, ['Denominación de tipo del fabricante', 'TIPO MEDIDOR'])
-  normalized['Latitud recomendada'] = first(row, ['Latitud recomendada', 'Latitud'])
-  normalized['Longitud recomendada'] = first(row, ['Longitud recomendada', 'Longitud'])
-  normalized['Transformador DS'] = first(row, ['Transformador DS', 'Placa transformador'])
-  normalized['Medidor MD'] = first(row, ['Medidor MD', 'Número de serie'])
-  normalized['Equipo CT'] = first(row, ['Equipo CT', 'Número de equipo'])
-  normalized.Descripción = first(row, ['Texto cabecera de la orden', 'Clase de actividad PM', 'Descripción'])
-  normalized['Tipo de orden'] = first(row, ['Unnamed', 'Clase de orden'])
-  normalized['Clase de orden'] = first(row, ['Clase de orden'])
-  normalized['Clase de actividad PM'] = first(row, ['Clase de actividad PM'])
-  normalized['Texto cabecera de la orden'] = first(row, ['Texto cabecera de la orden'])
-  return normalized
-}
-
-function decodeBase64(value) {
-  const binary = atob(value)
-  const bytes = new Uint8Array(binary.length)
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
-  return bytes
-}
-
 async function handleUpload(request, env) {
   if (request.method !== 'POST') return json({ error: 'Método no permitido.' }, 405)
   if (await sessionRole(request, env) !== 'admin') {
     return json({ error: 'Se requiere autorización administrativa.' }, 403)
   }
 
-  const { filename = '', uploadedBy = '', fileBase64 = '' } = await request.json()
+  const { filename = '', uploadedBy = '', rows: submittedRows = [], sheetName = '' } = await request.json()
   if (!/\.(xlsx|xlsm|xls)$/i.test(filename)) return json({ error: 'Selecciona un archivo Excel válido.' }, 400)
   if (!uploadedBy.trim()) return json({ error: 'Indica el nombre del responsable de la carga.' }, 400)
+  if (!Array.isArray(submittedRows) || !submittedRows.length) return json({ error: 'La carga no contiene órdenes.' }, 400)
+  if (submittedRows.length > 20000) return json({ error: 'La carga supera el máximo de 20,000 órdenes.' }, 413)
 
-  const bytes = decodeBase64(fileBase64)
-  if (!bytes.length || bytes.length > MAX_BYTES) {
-    return json({ error: 'El archivo está vacío o supera el límite de 12 MB.' }, 400)
-  }
+  const rows = submittedRows
+    .filter(row => row && typeof row === 'object' && String(row.Orden ?? '').trim())
+    .map(row => ({
+      Orden: row.Orden ?? '',
+      CLIENTE: row.CLIENTE ?? '',
+      'Pto.tbjo.resp.': row['Pto.tbjo.resp.'] ?? '',
+      DEADLINE: row.DEADLINE ?? '',
+      Calle: row.Calle ?? '',
+      Distrito: row.Distrito ?? '',
+      'Status usuario ORDEN': row['Status usuario ORDEN'] ?? '',
+      'TIPO MEDIDOR': row['TIPO MEDIDOR'] ?? '',
+      'Latitud recomendada': row['Latitud recomendada'] ?? '',
+      'Longitud recomendada': row['Longitud recomendada'] ?? '',
+      'Transformador DS': row['Transformador DS'] ?? '',
+      'Medidor MD': row['Medidor MD'] ?? '',
+      'Equipo CT': row['Equipo CT'] ?? '',
+      Descripción: row.Descripción ?? '',
+      'Tipo de orden': row['Tipo de orden'] ?? '',
+      'Clase de orden': row['Clase de orden'] ?? '',
+      'Clase de actividad PM': row['Clase de actividad PM'] ?? '',
+      'Texto cabecera de la orden': row['Texto cabecera de la orden'] ?? '',
+      'Teléfono principal': row['Teléfono principal'] ?? '',
+      'Referencia textual': row['Referencia textual'] ?? '',
+      'Fuente coordenada': row['Fuente coordenada'] ?? '',
+      Confianza: row.Confianza ?? '',
+      'ID fuente': row['ID fuente'] ?? '',
+      'Orden previa': row['Orden previa'] ?? '',
+      Contratista: row.Contratista ?? '',
+      'Condiciones conexion': row['Condiciones conexion'] ?? '',
+    }))
 
-  const workbook = XLSX.read(bytes, { type: 'array', cellDates: true })
-  const sheetName = workbook.SheetNames.find(name => name.toUpperCase().includes('BASE CONSOLIDADA'))
-    || workbook.SheetNames.find(name => name.toUpperCase().includes('BASE OPERATIVA'))
-    || workbook.SheetNames[0]
-  if (!sheetName) return json({ error: 'El archivo no contiene hojas.' }, 400)
-
-  const rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '', raw: true })
-  if (!rawRows.length) return json({ error: 'La hoja no contiene órdenes.' }, 400)
-
-  const missing = REQUIRED.filter(column => !(column in rawRows[0]))
-  if (missing.length) {
-    return json({ error: `La base consolidada no contiene columnas obligatorias: ${missing.join(', ')}.` }, 400)
-  }
-
-  const rows = rawRows.map(normalizeRow).filter(row => String(row.Orden ?? '').trim())
-  if (!rows.length) return json({ error: 'La hoja no contiene órdenes válidas.' }, 400)
+  if (!rows.length) return json({ error: 'La carga no contiene órdenes válidas.' }, 400)
 
   const typeCounts = rows.reduce((result, row) => {
     const type = String(row['Tipo de orden'] || row['Clase de orden'] || 'Sin tipo').trim() || 'Sin tipo'
