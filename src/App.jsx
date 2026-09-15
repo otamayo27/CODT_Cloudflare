@@ -197,7 +197,7 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
   const [selectedType,setSelectedType]=useState('')
   const [selectedActivity,setSelectedActivity]=useState('')
 
-  const companies=useMemo(()=>[...new Set(rows.map(r=>clean(r.Empresa)||'DESCONOCIDO')].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[rows])
+  const companies=useMemo(()=>[...new Set(rows.map(r=>clean(r.Empresa)||'DESCONOCIDO'))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[rows])
   const companyRows=useMemo(()=>rows.filter(r=>!company||(clean(r.Empresa)||'DESCONOCIDO')===company),[rows,company])
   const responsibles=useMemo(()=>[...new Set(companyRows.map(r=>clean(r['Pto.tbjo.resp.'])).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[companyRows])
   const responsibleRows=useMemo(()=>companyRows.filter(r=>!responsible||clean(r['Pto.tbjo.resp.'])===responsible),[companyRows,responsible])
