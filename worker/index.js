@@ -102,10 +102,19 @@ async function decompressText(bytes) {
   return new Response(stream).text()
 }
 
+function removePersonalData(row) {
+  const safe = { ...row }
+  delete safe.CLIENTE
+  delete safe['Teléfono principal']
+  delete safe['Nombre completo']
+  return safe
+}
+
 async function readCurrent(env) {
   const stored = await env.DATA.get('current', { type: 'arrayBuffer' })
   if (!stored) return { rows: [], metadata: {} }
-  return JSON.parse(await decompressText(stored))
+  const current = JSON.parse(await decompressText(stored))
+  return { ...current, rows: Array.isArray(current.rows) ? current.rows.map(removePersonalData) : [] }
 }
 
 async function handleOrders(request, env) {
@@ -132,8 +141,9 @@ async function handleUpload(request, env) {
     .filter(row => row && typeof row === 'object' && String(row.Orden ?? '').trim())
     .map(row => ({
       Orden: row.Orden ?? '',
-      CLIENTE: row.CLIENTE ?? '',
       'Pto.tbjo.resp.': row['Pto.tbjo.resp.'] ?? '',
+      Empresa: row.Empresa ?? 'DESCONOCIDO',
+      Funcion: row.Funcion ?? 'DESCONOCIDO',
       DEADLINE: row.DEADLINE ?? '',
       Calle: row.Calle ?? '',
       Distrito: row.Distrito ?? '',
@@ -149,7 +159,6 @@ async function handleUpload(request, env) {
       'Clase de orden': row['Clase de orden'] ?? '',
       'Clase de actividad PM': row['Clase de actividad PM'] ?? '',
       'Texto cabecera de la orden': row['Texto cabecera de la orden'] ?? '',
-      'Teléfono principal': row['Teléfono principal'] ?? '',
       'Referencia textual': row['Referencia textual'] ?? '',
       'Fuente coordenada': row['Fuente coordenada'] ?? '',
       Confianza: row.Confianza ?? '',
