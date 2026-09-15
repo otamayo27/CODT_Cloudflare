@@ -10,6 +10,7 @@ import {
 import {
   clean, getInfoQuality, mapsUrl, validCoordinate, wazeUrl
 } from './utils'
+import { personnelByResponsible } from './personnel'
 
 const AUTO_REFRESH_MS = 30_000
 
@@ -109,10 +110,13 @@ function normalizeUploadValue(value) {
 }
 
 function normalizeUploadRow(row) {
+  const responsible = clean(firstUploadValue(row, ['Puesto de trabajo responsable en medidas de mantenimiento', 'Pto.tbjo.resp.']))
+  const personnel = personnelByResponsible[responsible] || { empresa: 'DESCONOCIDO', funcion: 'DESCONOCIDO' }
   return {
     Orden: firstUploadValue(row, ['Orden actual', 'Orden', 'Número de orden']),
-    CLIENTE: firstUploadValue(row, ['Nombre completo', 'CLIENTE']),
-    'Pto.tbjo.resp.': firstUploadValue(row, ['Puesto de trabajo responsable en medidas de mantenimiento', 'Pto.tbjo.resp.']),
+    'Pto.tbjo.resp.': responsible,
+    Empresa: personnel.empresa,
+    Funcion: personnel.funcion,
     DEADLINE: normalizeUploadValue(firstUploadValue(row, ['DEADLINE', 'Fecha entrada'])),
     Calle: firstUploadValue(row, ['Calle', 'Calle 4']),
     Distrito: firstUploadValue(row, ['Distrito', 'Población']),
@@ -128,7 +132,6 @@ function normalizeUploadRow(row) {
     'Clase de orden': firstUploadValue(row, ['Clase de orden']),
     'Clase de actividad PM': firstUploadValue(row, ['Clase de actividad PM']),
     'Texto cabecera de la orden': firstUploadValue(row, ['Texto cabecera de la orden']),
-    'Teléfono principal': firstUploadValue(row, ['Teléfono principal']),
     'Referencia textual': firstUploadValue(row, ['Referencia textual']),
     'Fuente coordenada': firstUploadValue(row, ['Fuente coordenada']),
     Confianza: firstUploadValue(row, ['Confianza']),
@@ -177,30 +180,33 @@ function activity(row){return clean(row['Clase de actividad PM'])||clean(row.Des
 
 function OrdersMap({ rows, onSelect }) {
   const mapped=rows.filter(r=>validCoordinate(r['Latitud recomendada'],r['Longitud recomendada']))
-  return <div className="map-card"><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={mapped}/>{mapped.map((row,idx)=><CircleMarker key={`${clean(row.Orden)}-${idx}`} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={7} pathOptions={{color:'#fff',weight:2,fillColor:'#0f766e',fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}><Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span><strong>{orderType(row)}</strong><span>{activity(row)}</span><span>{clean(row.CLIENTE)||'Cliente no disponible'}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>)}</MapContainer></div>
+  return <div className="map-card"><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={mapped}/>{mapped.map((row,idx)=><CircleMarker key={`${clean(row.Orden)}-${idx}`} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={7} pathOptions={{color:'#fff',weight:2,fillColor:'#0f766e',fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}><Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span><strong>{orderType(row)}</strong><span>{activity(row)}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>)}</MapContainer></div>
 }
 
 function TypeSummary({ rows, selectedType, onSelect }) {
   const data=useMemo(()=>{
-    const counts=new Map();rows.forEach(r=>{const t=orderType(r);counts.set(t,(counts.get(t)||0)+1)});return [...counts.entries()].sort((a,b)=>b[1]-a[1])
+    const counts=new Map();rows.forEach(r=>{const t=orderType(r);counts.set(t,(counts.get(t)||0)+1)});return [...counts.entries()].sort((a,b)=>a[0].localeCompare(b[0],'es',{sensitivity:'base'}))
   },[rows])
-  return <section className="type-dashboard" aria-label="Órdenes por tipo"><button className={`type-card ${selectedType===''?'active':''}`} onClick={()=>onSelect('')}><Layers3 size={18}/><strong>{rows.length}</strong><span>Todas</span></button>{data.map(([type,count])=><button key={type} className={`type-card ${selectedType===type?'active':''}`} onClick={()=>onSelect(selectedType===type?'':type)}><span className="type-code">{type.replace('Orden ','').slice(0,18)}</span><strong>{count}</strong><span>pendientes</span></button>)}</section>
+  return <section className="type-dashboard" aria-label="Órdenes por tipo"><button className={`type-card type-color-all ${selectedType===''?'active':''}`} onClick={()=>onSelect('')}><Layers3 size={18}/><strong>{rows.length}</strong><span>Todas</span></button>{data.map(([type,count],index)=><button key={type} className={`type-card type-color-${index%6} ${selectedType===type?'active':''}`} onClick={()=>onSelect(selectedType===type?'':type)}><span className="type-code">{type.replace('Orden ','').slice(0,18)}</span><strong>{count}</strong><span>pendientes</span></button>)}</section>
 }
 
 function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh, refreshing, onAdmin }) {
+  const [company,setCompany]=useState('')
   const [responsible,setResponsible]=useState('')
   const [query,setQuery]=useState('')
   const [selectedType,setSelectedType]=useState('')
   const [selectedActivity,setSelectedActivity]=useState('')
 
-  const responsibles=useMemo(()=>[...new Set(rows.map(r=>clean(r['Pto.tbjo.resp.'])).filter(Boolean))].sort(),[rows])
-  const responsibleRows=useMemo(()=>rows.filter(r=>!responsible||clean(r['Pto.tbjo.resp.'])===responsible),[rows,responsible])
+  const companies=useMemo(()=>[...new Set(rows.map(r=>clean(r.Empresa)||'DESCONOCIDO')].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[rows])
+  const companyRows=useMemo(()=>rows.filter(r=>!company||(clean(r.Empresa)||'DESCONOCIDO')===company),[rows,company])
+  const responsibles=useMemo(()=>[...new Set(companyRows.map(r=>clean(r['Pto.tbjo.resp.'])).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[companyRows])
+  const responsibleRows=useMemo(()=>companyRows.filter(r=>!responsible||clean(r['Pto.tbjo.resp.'])===responsible),[companyRows,responsible])
   const activities=useMemo(()=>[...new Set(responsibleRows.filter(r=>!selectedType||orderType(r)===selectedType).map(activity).filter(Boolean))].sort(),[responsibleRows,selectedType])
   const filtered=useMemo(()=>responsibleRows.filter(row=>{
     const typeOk=!selectedType||orderType(row)===selectedType
     const activityOk=!selectedActivity||activity(row)===selectedActivity
     const q=query.toLowerCase().trim()
-    const searchOk=!q||[row.Orden,row.CLIENTE,row.Distrito,row.Calle,row['Teléfono principal'],orderType(row),activity(row)].some(v=>clean(v).toLowerCase().includes(q))
+    const searchOk=!q||[row.Orden,row.Distrito,row.Calle,row.Empresa,row['Pto.tbjo.resp.'],orderType(row),activity(row)].some(v=>clean(v).toLowerCase().includes(q))
     return typeOk&&activityOk&&searchOk
   }).sort((a,b)=>
     String(orderType(a)).localeCompare(String(orderType(b))) ||
@@ -214,7 +220,7 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
 
     <section className="welcome-panel"><div className="welcome-copy"><span className="eyebrow light">Base operativa consolidada</span><h2>Todo lo pendiente de ejecutar, separado por tipo de orden.</h2><p>Selecciona la dupla y luego el tipo de orden para organizar la jornada.</p></div><div className="database-card"><Database size={20}/><strong>{rows.length}</strong><span>órdenes activas</span><small>Actualizado {formatUpdateDate(metadata.uploadedAt)}</small></div></section>
 
-    <section className="filters-card"><div className="field"><label><UserRound size={16}/> Responsable</label><select value={responsible} onChange={e=>{setResponsible(e.target.value);setSelectedType('');setSelectedActivity('')}}><option value="">Todos los responsables</option>{responsibles.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="field search-field"><label><Search size={16}/> Buscar</label><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="OT, cliente, distrito, tipo o actividad"/></div></section>
+    <section className="filters-card"><div className="field"><label><Building2 size={16}/> Empresa</label><select value={company} onChange={e=>{setCompany(e.target.value);setResponsible('');setSelectedType('');setSelectedActivity('')}}><option value="">Todas las empresas</option>{companies.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="field"><label><UserRound size={16}/> Dupla / responsable</label><select value={responsible} onChange={e=>{setResponsible(e.target.value);setSelectedType('');setSelectedActivity('')}}><option value="">Todas las duplas</option>{responsibles.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="field search-field"><label><Search size={16}/> Buscar</label><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="OT, distrito, empresa, dupla, tipo o actividad"/></div></section>
 
     <TypeSummary rows={responsibleRows} selectedType={selectedType} onSelect={type=>{setSelectedType(type);setSelectedActivity('')}}/>
 
@@ -222,7 +228,7 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
 
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">Ubicación</span><h2>Mapa operativo</h2></div><span className="muted">{located} con coordenadas</span></div><OrdersMap rows={filtered} onSelect={onSelect}/></section>
 
-    <section className="orders-section"><div className="section-heading"><div><span className="eyebrow">Ejecución</span><h2>Órdenes por tipo</h2></div><span className="muted">{filtered.length} visibles</span></div><div className="orders-list">{filtered.map((row,idx)=>{const quality=getInfoQuality(row);return <button className="order-card" key={`${clean(row.Orden)}-${idx}`} onClick={()=>onSelect(row)}><div className="urgency-strip"/><div className="order-card-main"><div className="order-title-line"><span className="order-number">OT {clean(row.Orden)||'—'}</span><span className={`status-chip ${quality.toLowerCase().replace('í','i')}`}>{quality}</span></div><div className="type-chip">{orderType(row)}</div><div className="activity-title">{activity(row)}</div><div className="client-block"><span className="client-label"><Building2 size={14}/> Cliente</span><strong className="order-client">{clean(row.CLIENTE)||'Cliente no disponible'}</strong></div><div className="order-location"><MapPinned size={14}/> {clean(row.Distrito)||'Sin distrito'}{clean(row.Calle)?` · ${clean(row.Calle)}`:''}</div></div><ChevronRight className="chevron" size={22}/></button>})}{!filtered.length&&<div className="empty">No hay órdenes que coincidan con los filtros actuales.</div>}</div></section>
+    <section className="orders-section"><div className="section-heading"><div><span className="eyebrow">Ejecución</span><h2>Órdenes por tipo</h2></div><span className="muted">{filtered.length} visibles</span></div><div className="orders-list">{filtered.map((row,idx)=>{const quality=getInfoQuality(row);return <button className="order-card" key={`${clean(row.Orden)}-${idx}`} onClick={()=>onSelect(row)}><div className="urgency-strip"/><div className="order-card-main"><div className="order-title-line"><span className="order-number">OT {clean(row.Orden)||'—'}</span><span className={`status-chip ${quality.toLowerCase().replace('í','i')}`}>{quality}</span></div><div className="type-chip">{orderType(row)}</div><div className="activity-title">{activity(row)}</div><div className="order-location"><MapPinned size={14}/> {clean(row.Distrito)||'Sin distrito'}{clean(row.Calle)?` · ${clean(row.Calle)}`:''}</div></div><ChevronRight className="chevron" size={22}/></button>})}{!filtered.length&&<div className="empty">No hay órdenes que coincidan con los filtros actuales.</div>}</div></section>
   </main>
 }
 
@@ -232,7 +238,7 @@ function DetailPage({ row, onBack }) {
   const lat=row['Latitud recomendada']
   const lon=row['Longitud recomendada']
   const hasMap=validCoordinate(lat,lon)
-  return <main className="detail-shell"><header className="detail-topbar"><button className="back-button" onClick={onBack}><ArrowLeft size={20}/> Órdenes</button><span className="eyebrow">GeoOperación</span></header><section className="hero-card"><div className="hero-main"><span className="eyebrow light">Orden de trabajo</span><h1>{clean(row.Orden)||'—'}</h1><div className="hero-client-label"><Building2 size={15}/> Cliente</div><p className="hero-client">{clean(row.CLIENTE)||'Cliente no disponible'}</p></div><div className="hero-deadline"><span>Tipo de orden</span><strong>{orderType(row)}</strong><em>{activity(row)}</em></div></section><section className="detail-section priority-section"><div className="section-title">Clasificación</div><div className="detail-grid"><ValueBlock label="Clase de orden" value={row['Clase de orden']}/><ValueBlock label="Tipo de orden" value={orderType(row)}/><ValueBlock label="Actividad" value={activity(row)} wide/><ValueBlock label="Estado" value={row['Status usuario ORDEN']}/><ValueBlock label="Responsable" value={row['Pto.tbjo.resp.']}/></div></section><section className="detail-section"><div className="section-title"><Phone size={18}/> Contacto</div><a className="phone-card" href={clean(row['Teléfono principal'])?`tel:${clean(row['Teléfono principal'])}`:undefined}><Phone size={22}/><div><span>Teléfono principal</span><strong>{clean(row['Teléfono principal'])||'No disponible'}</strong></div></a></section><section className="detail-section"><div className="section-title"><LocateFixed size={18}/> Ubicación</div><div className="reference-card"><span>Referencia</span><p>{clean(row['Referencia textual'])||clean(row.Calle)||'Sin referencia disponible.'}</p></div><div className="detail-grid compact"><ValueBlock label="Distrito" value={row.Distrito}/><ValueBlock label="Fuente" value={row['Fuente coordenada']}/><ValueBlock label="Confianza" value={row.Confianza}/><ValueBlock label="ID fuente" value={row['ID fuente']}/></div><div className="action-grid"><a className={`action-button ${!hasMap?'disabled':''}`} href={hasMap?mapsUrl(lat,lon):undefined} target="_blank" rel="noreferrer"><MapPinned size={20}/> Google Maps <ExternalLink size={15}/></a><a className={`action-button secondary ${!hasMap?'disabled':''}`} href={hasMap?wazeUrl(lat,lon):undefined} target="_blank" rel="noreferrer"><Navigation size={20}/> Waze <ExternalLink size={15}/></a></div>{hasMap&&<div className="detail-map"><MapContainer center={[Number(lat),Number(lon)]} zoom={16} scrollWheelZoom={false} className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><CircleMarker center={[Number(lat),Number(lon)]} radius={9} pathOptions={{color:'#fff',weight:2,fillColor:'#0f766e',fillOpacity:1}}/></MapContainer></div>}</section><section className="detail-section"><div className="section-title"><Zap size={18}/> Información de red</div><div className="detail-grid"><ValueBlock label="Transformador" value={row['Transformador DS']}/><ValueBlock label="Medidor contiguo" value={row['Medidor MD']}/><ValueBlock label="Equipo" value={row['Equipo CT']}/><ValueBlock label="Orden previa" value={row['Orden previa']}/></div></section></main>
+  return <main className="detail-shell"><header className="detail-topbar"><button className="back-button" onClick={onBack}><ArrowLeft size={20}/> Órdenes</button><span className="eyebrow">GeoOperación</span></header><section className="hero-card"><div className="hero-main"><span className="eyebrow light">Orden de trabajo</span><h1>{clean(row.Orden)||'—'}</h1></div><div className="hero-deadline"><span>Tipo de orden</span><strong>{orderType(row)}</strong><em>{activity(row)}</em></div></section><section className="detail-section priority-section"><div className="section-title">Clasificación</div><div className="detail-grid"><ValueBlock label="Clase de orden" value={row['Clase de orden']}/><ValueBlock label="Tipo de orden" value={orderType(row)}/><ValueBlock label="Actividad" value={activity(row)} wide/><ValueBlock label="Estado" value={row['Status usuario ORDEN']}/><ValueBlock label="Empresa" value={row.Empresa}/><ValueBlock label="Dupla / responsable" value={row['Pto.tbjo.resp.']}/></div></section><section className="detail-section"><div className="section-title"><LocateFixed size={18}/> Ubicación</div><div className="reference-card"><span>Referencia</span><p>{clean(row['Referencia textual'])||clean(row.Calle)||'Sin referencia disponible.'}</p></div><div className="detail-grid compact"><ValueBlock label="Distrito" value={row.Distrito}/><ValueBlock label="Fuente" value={row['Fuente coordenada']}/><ValueBlock label="Confianza" value={row.Confianza}/><ValueBlock label="ID fuente" value={row['ID fuente']}/></div><div className="action-grid"><a className={`action-button ${!hasMap?'disabled':''}`} href={hasMap?mapsUrl(lat,lon):undefined} target="_blank" rel="noreferrer"><MapPinned size={20}/> Google Maps <ExternalLink size={15}/></a><a className={`action-button secondary ${!hasMap?'disabled':''}`} href={hasMap?wazeUrl(lat,lon):undefined} target="_blank" rel="noreferrer"><Navigation size={20}/> Waze <ExternalLink size={15}/></a></div>{hasMap&&<div className="detail-map"><MapContainer center={[Number(lat),Number(lon)]} zoom={16} scrollWheelZoom={false} className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><CircleMarker center={[Number(lat),Number(lon)]} radius={9} pathOptions={{color:'#fff',weight:2,fillColor:'#0f766e',fillOpacity:1}}/></MapContainer></div>}</section><section className="detail-section"><div className="section-title"><Zap size={18}/> Información de red</div><div className="detail-grid"><ValueBlock label="Transformador" value={row['Transformador DS']}/><ValueBlock label="Medidor contiguo" value={row['Medidor MD']}/><ValueBlock label="Equipo" value={row['Equipo CT']}/><ValueBlock label="Orden previa" value={row['Orden previa']}/></div></section></main>
 }
 
 export default function App() {
