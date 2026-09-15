@@ -114,7 +114,18 @@ async function readCurrent(env) {
   const stored = await env.DATA.get('current', { type: 'arrayBuffer' })
   if (!stored) return { rows: [], metadata: {} }
   const current = JSON.parse(await decompressText(stored))
-  return { ...current, rows: Array.isArray(current.rows) ? current.rows.map(removePersonalData) : [] }
+  const sourceRows = Array.isArray(current.rows) ? current.rows : []
+  const containedPersonalData = sourceRows.some(row =>
+    Object.prototype.hasOwnProperty.call(row, 'CLIENTE')
+    || Object.prototype.hasOwnProperty.call(row, 'Teléfono principal')
+    || Object.prototype.hasOwnProperty.call(row, 'Nombre completo')
+  )
+  const safeCurrent = { ...current, rows: sourceRows.map(removePersonalData) }
+  if (containedPersonalData) {
+    await env.DATA.put('current', await compressText(JSON.stringify(safeCurrent)))
+    await env.DATA.delete('previous')
+  }
+  return safeCurrent
 }
 
 async function handleOrders(request, env) {
@@ -194,7 +205,14 @@ async function handleUpload(request, env) {
   }
 
   const current = await env.DATA.get('current', { type: 'arrayBuffer' })
-  if (current) await env.DATA.put('previous', current)
+  if (current) {
+    const existing = JSON.parse(await decompressText(current))
+    const safePrevious = {
+      ...existing,
+      rows: Array.isArray(existing.rows) ? existing.rows.map(removePersonalData) : [],
+    }
+    await env.DATA.put('previous', await compressText(JSON.stringify(safePrevious)))
+  }
   await env.DATA.put('current', compressed)
 
   return json({ ok: true, metadata: payload.metadata })
