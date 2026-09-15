@@ -176,18 +176,37 @@ function AdminPanel({ initialRole, onClose, onUploaded }) {
 
 function formatUpdateDate(value){if(!value)return'—';const d=new Date(value);if(Number.isNaN(d.getTime()))return'—';return new Intl.DateTimeFormat('es-SV',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}).format(d)}
 function orderType(row){return clean(row['Tipo de orden'])||clean(row['Clase de orden'])||'Sin tipo'}
+const TYPE_PALETTE = [
+  { background:'#ecfdf3', border:'#a6f4c5', ink:'#067647', marker:'#16a34a' },
+  { background:'#eff8ff', border:'#b2ddff', ink:'#175cd3', marker:'#2563eb' },
+  { background:'#fff6ed', border:'#f9dbaf', ink:'#b54708', marker:'#ea580c' },
+  { background:'#f4f3ff', border:'#d9d6fe', ink:'#5925dc', marker:'#7c3aed' },
+  { background:'#fdf2fa', border:'#fcceee', ink:'#c11574', marker:'#db2777' },
+  { background:'#f0fdfa', border:'#99f6e4', ink:'#0f766e', marker:'#0d9488' },
+]
+function typeColor(type) {
+  const normalized=clean(type).toLocaleLowerCase('es')
+  let hash=0
+  for(let index=0;index<normalized.length;index+=1) hash=((hash<<5)-hash+normalized.charCodeAt(index))|0
+  return TYPE_PALETTE[Math.abs(hash)%TYPE_PALETTE.length]
+}
+function typeStyle(type) {
+  const color=typeColor(type)
+  return { '--type-bg':color.background, '--type-border':color.border, '--type-ink':color.ink }
+}
 function activity(row){return clean(row['Clase de actividad PM'])||clean(row.Descripción)||'Sin actividad'}
 
 function OrdersMap({ rows, onSelect }) {
   const mapped=rows.filter(r=>validCoordinate(r['Latitud recomendada'],r['Longitud recomendada']))
-  return <div className="map-card"><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={mapped}/>{mapped.map((row,idx)=><CircleMarker key={`${clean(row.Orden)}-${idx}`} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={7} pathOptions={{color:'#fff',weight:2,fillColor:'#0f766e',fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}><Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span><strong>{orderType(row)}</strong><span>{activity(row)}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>)}</MapContainer></div>
+  const legend=useMemo(()=>[...new Set(mapped.map(orderType))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[mapped])
+  return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={mapped}/>{mapped.map((row,idx)=>{const color=typeColor(orderType(row));return <CircleMarker key={`${clean(row.Orden)}-${idx}`} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={7} pathOptions={{color:'#fff',weight:2,fillColor:color.marker,fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}><Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span><strong style={{color:color.ink}}>{orderType(row)}</strong><span>{activity(row)}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>})}</MapContainer></div>
 }
 
 function TypeSummary({ rows, selectedType, onSelect }) {
   const data=useMemo(()=>{
     const counts=new Map();rows.forEach(r=>{const t=orderType(r);counts.set(t,(counts.get(t)||0)+1)});return [...counts.entries()].sort((a,b)=>a[0].localeCompare(b[0],'es',{sensitivity:'base'}))
   },[rows])
-  return <section className="type-dashboard" aria-label="Órdenes por tipo"><button className={`type-card type-color-all ${selectedType===''?'active':''}`} onClick={()=>onSelect('')}><Layers3 size={18}/><strong>{rows.length}</strong><span>Todas</span></button>{data.map(([type,count],index)=><button key={type} className={`type-card type-color-${index%6} ${selectedType===type?'active':''}`} onClick={()=>onSelect(selectedType===type?'':type)}><span className="type-code">{type.replace('Orden ','').slice(0,18)}</span><strong>{count}</strong><span>pendientes</span></button>)}</section>
+  return <section className="type-dashboard" aria-label="Órdenes por tipo"><button className={`type-card type-color-all ${selectedType===''?'active':''}`} onClick={()=>onSelect('')}><Layers3 size={18}/><strong>{rows.length}</strong><span>Todas</span></button>{data.map(([type,count])=><button key={type} style={typeStyle(type)} className={`type-card categorized ${selectedType===type?'active':''}`} onClick={()=>onSelect(selectedType===type?'':type)}><span className="type-code">{type.replace('Orden ','').slice(0,18)}</span><strong>{count}</strong><span>pendientes</span></button>)}</section>
 }
 
 function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh, refreshing, onAdmin }) {
