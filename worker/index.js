@@ -155,6 +155,7 @@ async function handleUpload(request, env) {
       'Pto.tbjo.resp.': row['Pto.tbjo.resp.'] ?? '',
       Empresa: row.Empresa ?? 'DESCONOCIDO',
       Funcion: row.Funcion ?? 'DESCONOCIDO',
+      'Fecha de creación': row['Fecha de creación'] ?? '',
       DEADLINE: row.DEADLINE ?? '',
       Calle: row.Calle ?? '',
       Distrito: row.Distrito ?? '',

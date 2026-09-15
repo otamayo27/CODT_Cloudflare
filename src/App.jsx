@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
-import { CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet'
+import { CircleMarker, MapContainer, Pane, Popup, TileLayer, useMap } from 'react-leaflet'
 import {
   AlertTriangle, ArrowLeft, Building2, CheckCircle2, ChevronRight,
   Database, ExternalLink, LocateFixed, MapPinned, Navigation, Phone,
@@ -117,6 +117,7 @@ function normalizeUploadRow(row) {
     'Pto.tbjo.resp.': responsible,
     Empresa: personnel.empresa,
     Funcion: personnel.funcion,
+    'Fecha de creación': normalizeUploadValue(firstUploadValue(row, ['Fecha de creación', 'Fecha creación', 'Fecha entrada', 'Fecha liberación de la orden'])),
     DEADLINE: normalizeUploadValue(firstUploadValue(row, ['DEADLINE', 'Fecha entrada'])),
     Calle: firstUploadValue(row, ['Calle', 'Calle 4']),
     Distrito: firstUploadValue(row, ['Distrito', 'Población']),
@@ -184,12 +185,22 @@ const TYPE_PALETTE = [
   { background:'#fdf2fa', border:'#fcceee', ink:'#c11574', marker:'#db2777' },
   { background:'#f0fdfa', border:'#99f6e4', ink:'#0f766e', marker:'#0d9488' },
 ]
+const TYPE_COLORS = {
+  // Conexiones nuevas: color destacado y panel superior en el mapa.
+  ZCON: { background:'#eff8ff', border:'#84caff', ink:'#175cd3', marker:'#2563eb' },
+  // Desconexión y reconexión comparten familia cromática, con tonos distinguibles.
+  ZDES: { background:'#f0fdfa', border:'#99f6e4', ink:'#0f766e', marker:'#0f766e' },
+  ZREC: { background:'#ecfeff', border:'#67e8f9', ink:'#0e7490', marker:'#22b8cf' },
+}
 function typeColor(type) {
   const normalized=clean(type).toLocaleLowerCase('es')
+  const explicit=TYPE_COLORS[clean(type).toUpperCase()]
+  if(explicit)return explicit
   let hash=0
   for(let index=0;index<normalized.length;index+=1) hash=((hash<<5)-hash+normalized.charCodeAt(index))|0
   return TYPE_PALETTE[Math.abs(hash)%TYPE_PALETTE.length]
 }
+function isNewService(row){return orderType(row).toUpperCase()==='ZCON'}
 function typeStyle(type) {
   const color=typeColor(type)
   return { '--type-bg':color.background, '--type-border':color.border, '--type-ink':color.ink }
@@ -199,7 +210,8 @@ function activity(row){return clean(row['Clase de actividad PM'])||clean(row.Des
 function OrdersMap({ rows, onSelect }) {
   const mapped=rows.filter(r=>validCoordinate(r['Latitud recomendada'],r['Longitud recomendada']))
   const legend=useMemo(()=>[...new Set(mapped.map(orderType))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[mapped])
-  return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={mapped}/>{mapped.map((row,idx)=>{const color=typeColor(orderType(row));return <CircleMarker key={`${clean(row.Orden)}-${idx}`} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={7} pathOptions={{color:'#fff',weight:2,fillColor:color.marker,fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}><Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span><strong style={{color:color.ink}}>{orderType(row)}</strong><span>{activity(row)}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>})}</MapContainer></div>
+  const renderMarker=(row,idx)=>{const color=typeColor(orderType(row));return <CircleMarker key={`${clean(row.Orden)}-${idx}`} pane={isNewService(row)?'new-service-markers':'markerPane'} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={isNewService(row)?8:7} pathOptions={{color:'#fff',weight:isNewService(row)?3:2,fillColor:color.marker,fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}><Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span><strong style={{color:color.ink}}>{orderType(row)}</strong><span>{activity(row)}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>}
+  return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={mapped}/><Pane name="new-service-markers" style={{zIndex:640}}/>{mapped.filter(row=>!isNewService(row)).map(renderMarker)}{mapped.filter(isNewService).map(renderMarker)}</MapContainer></div>
 }
 
 function TypeSummary({ rows, selectedType, onSelect }) {
@@ -253,11 +265,29 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
 
 function ValueBlock({ label, value, wide=false }){return <div className={`value-block ${wide?'wide':''}`}><span>{label}</span><strong>{clean(value)||'—'}</strong></div>}
 
+function parseOrderDate(value){
+  if(!value)return null
+  if(value instanceof Date&&!Number.isNaN(value.getTime()))return value
+  const text=clean(value)
+  const iso=text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+  const latin=text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/)
+  const date=iso?new Date(Number(iso[1]),Number(iso[2])-1,Number(iso[3])):latin?new Date(Number(latin[3]),Number(latin[2])-1,Number(latin[1])):new Date(text)
+  return Number.isNaN(date.getTime())?null:date
+}
+function orderAge(value){
+  const created=parseOrderDate(value)
+  if(!created)return 'Fecha de creación no disponible'
+  const today=new Date(); const start=Date.UTC(created.getFullYear(),created.getMonth(),created.getDate()); const end=Date.UTC(today.getFullYear(),today.getMonth(),today.getDate())
+  const days=Math.max(0,Math.floor((end-start)/86400000))
+  return `${days.toLocaleString('es-SV')} ${days===1?'día calendario':'días calendario'}`
+}
+function formatOrderDate(value){const date=parseOrderDate(value);return date?new Intl.DateTimeFormat('es-SV',{day:'2-digit',month:'long',year:'numeric'}).format(date):'—'}
+
 function DetailPage({ row, onBack }) {
   const lat=row['Latitud recomendada']
   const lon=row['Longitud recomendada']
   const hasMap=validCoordinate(lat,lon)
-  return <main className="detail-shell"><header className="detail-topbar"><button className="back-button" onClick={onBack}><ArrowLeft size={20}/> Órdenes</button><span className="eyebrow">GeoOperación</span></header><section className="hero-card"><div className="hero-main"><span className="eyebrow light">Orden de trabajo</span><h1>{clean(row.Orden)||'—'}</h1></div><div className="hero-deadline"><span>Tipo de orden</span><strong>{orderType(row)}</strong><em>{activity(row)}</em></div></section><section className="detail-section priority-section"><div className="section-title">Clasificación</div><div className="detail-grid"><ValueBlock label="Clase de orden" value={row['Clase de orden']}/><ValueBlock label="Tipo de orden" value={orderType(row)}/><ValueBlock label="Actividad" value={activity(row)} wide/><ValueBlock label="Estado" value={row['Status usuario ORDEN']}/><ValueBlock label="Empresa" value={row.Empresa}/><ValueBlock label="Dupla / responsable" value={row['Pto.tbjo.resp.']}/></div></section><section className="detail-section"><div className="section-title"><LocateFixed size={18}/> Ubicación</div><div className="reference-card"><span>Referencia</span><p>{clean(row['Referencia textual'])||clean(row.Calle)||'Sin referencia disponible.'}</p></div><div className="detail-grid compact"><ValueBlock label="Distrito" value={row.Distrito}/><ValueBlock label="Fuente" value={row['Fuente coordenada']}/><ValueBlock label="Confianza" value={row.Confianza}/><ValueBlock label="ID fuente" value={row['ID fuente']}/></div><div className="action-grid"><a className={`action-button ${!hasMap?'disabled':''}`} href={hasMap?mapsUrl(lat,lon):undefined} target="_blank" rel="noreferrer"><MapPinned size={20}/> Google Maps <ExternalLink size={15}/></a><a className={`action-button secondary ${!hasMap?'disabled':''}`} href={hasMap?wazeUrl(lat,lon):undefined} target="_blank" rel="noreferrer"><Navigation size={20}/> Waze <ExternalLink size={15}/></a></div>{hasMap&&<div className="detail-map"><MapContainer center={[Number(lat),Number(lon)]} zoom={16} scrollWheelZoom={false} className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><CircleMarker center={[Number(lat),Number(lon)]} radius={9} pathOptions={{color:'#fff',weight:2,fillColor:'#0f766e',fillOpacity:1}}/></MapContainer></div>}</section><section className="detail-section"><div className="section-title"><Zap size={18}/> Información de red</div><div className="detail-grid"><ValueBlock label="Transformador" value={row['Transformador DS']}/><ValueBlock label="Medidor contiguo" value={row['Medidor MD']}/><ValueBlock label="Equipo" value={row['Equipo CT']}/><ValueBlock label="Orden previa" value={row['Orden previa']}/></div></section></main>
+  return <main className="detail-shell"><header className="detail-topbar"><button className="back-button" onClick={onBack}><ArrowLeft size={20}/> Órdenes</button><span className="eyebrow">GeoOperación</span></header><section className="hero-card"><div className="hero-main"><span className="eyebrow light">Orden de trabajo</span><h1>{clean(row.Orden)||'—'}</h1></div><div className="hero-deadline"><span>Tipo de orden</span><strong>{orderType(row)}</strong><em>{activity(row)}</em></div></section><section className="detail-section priority-section"><div className="section-title">Clasificación</div><div className="detail-grid"><ValueBlock label="Clase de orden" value={row['Clase de orden']}/><ValueBlock label="Tipo de orden" value={orderType(row)}/><ValueBlock label="Actividad" value={activity(row)} wide/><ValueBlock label="Estado" value={row['Status usuario ORDEN']}/><ValueBlock label="Fecha de creación" value={formatOrderDate(row['Fecha de creación'])}/><ValueBlock label="Tiempo transcurrido" value={orderAge(row['Fecha de creación'])}/><ValueBlock label="Empresa" value={row.Empresa}/><ValueBlock label="Dupla / responsable" value={row['Pto.tbjo.resp.']}/></div></section><section className="detail-section"><div className="section-title"><LocateFixed size={18}/> Ubicación</div><div className="reference-card"><span>Referencia</span><p>{clean(row['Referencia textual'])||clean(row.Calle)||'Sin referencia disponible.'}</p></div><div className="detail-grid compact"><ValueBlock label="Distrito" value={row.Distrito}/><ValueBlock label="Fuente" value={row['Fuente coordenada']}/><ValueBlock label="Confianza" value={row.Confianza}/><ValueBlock label="ID fuente" value={row['ID fuente']}/></div><div className="action-grid"><a className={`action-button ${!hasMap?'disabled':''}`} href={hasMap?mapsUrl(lat,lon):undefined} target="_blank" rel="noreferrer"><MapPinned size={20}/> Google Maps <ExternalLink size={15}/></a><a className={`action-button secondary ${!hasMap?'disabled':''}`} href={hasMap?wazeUrl(lat,lon):undefined} target="_blank" rel="noreferrer"><Navigation size={20}/> Waze <ExternalLink size={15}/></a></div>{hasMap&&<div className="detail-map"><MapContainer center={[Number(lat),Number(lon)]} zoom={16} scrollWheelZoom={false} className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><CircleMarker center={[Number(lat),Number(lon)]} radius={9} pathOptions={{color:'#fff',weight:2,fillColor:typeColor(orderType(row)).marker,fillOpacity:1}}/></MapContainer></div>}</section><section className="detail-section"><div className="section-title"><Zap size={18}/> Información de red</div><div className="detail-grid"><ValueBlock label="Transformador" value={row['Transformador DS']}/><ValueBlock label="Medidor contiguo" value={row['Medidor MD']}/><ValueBlock label="Equipo" value={row['Equipo CT']}/><ValueBlock label="Orden previa" value={row['Orden previa']}/></div></section></main>
 }
 
 export default function App() {
