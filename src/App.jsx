@@ -12,7 +12,10 @@ import {
 } from './utils'
 import { personnelByResponsible } from './personnel'
 
-const AUTO_REFRESH_MS = 30_000
+// La base se actualiza de forma administrativa; consultar KV cada 30 segundos
+// consume innecesariamente la cuota gratuita. Diez minutos mantiene una vista
+// suficientemente fresca y deja el botón manual para actualizaciones urgentes.
+const AUTO_REFRESH_MS = 10 * 60_000
 
 async function apiJson(url, options = {}) {
   const response = await fetch(url, {
@@ -305,10 +308,14 @@ export default function App() {
     if(showLoader)setRows(null)
     setRefreshing(true);setError('')
     try{const result=await loadOrders(controller.signal);setRows(result.rows);setMetadata(result.metadata);setRole(result.role);setAccessRequired(false);setSelected(current=>{if(!current)return null;const id=clean(current.Orden);return result.rows.find(r=>clean(r.Orden)===id)||null})}
-    catch(err){setRows(null);setSelected(null);if(err.status===401){setAccessRequired(true);setError('')}else setError(err.message||'Error de carga')}
+    catch(err){
+      if(err.status===401){setRows(null);setSelected(null);setAccessRequired(true);setError('')}
+      else if(showLoader){setRows(null);setSelected(null);setError(err.message||'Error de carga')}
+      else console.warn('No fue posible actualizar la base en segundo plano:',err)
+    }
     finally{setRefreshing(false)}
   },[])
-  useEffect(()=>{refresh(true);const interval=window.setInterval(()=>refresh(false),AUTO_REFRESH_MS);const onFocus=()=>refresh(false);const onVisibility=()=>{if(document.visibilityState==='visible')refresh(false)};window.addEventListener('focus',onFocus);document.addEventListener('visibilitychange',onVisibility);return()=>{window.clearInterval(interval);window.removeEventListener('focus',onFocus);document.removeEventListener('visibilitychange',onVisibility)}},[refresh])
+  useEffect(()=>{refresh(true);const interval=window.setInterval(()=>refresh(false),AUTO_REFRESH_MS);return()=>window.clearInterval(interval)},[refresh])
   if(accessRequired)return <AccessScreen onAuthenticated={newRole=>{setRole(newRole);refresh(true)}}/>
   if(error)return <ErrorScreen message={error} onRetry={()=>refresh(true)}/>
   if(!rows)return <LoadingScreen/>

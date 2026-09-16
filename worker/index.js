@@ -1,6 +1,9 @@
 const COOKIE = 'geo_session'
 const TTL_SECONDS = 60 * 60 * 24 * 30
 const encoder = new TextEncoder()
+const CURRENT_CACHE_TTL_MS = 5 * 60 * 1000
+let currentCache = null
+let currentCacheExpiresAt = 0
 
 function json(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), {
@@ -111,6 +114,7 @@ function removePersonalData(row) {
 }
 
 async function readCurrent(env) {
+  if (currentCache && Date.now() < currentCacheExpiresAt) return currentCache
   const stored = await env.DATA.get('current', { type: 'arrayBuffer' })
   if (!stored) return { rows: [], metadata: {} }
   const current = JSON.parse(await decompressText(stored))
@@ -125,6 +129,8 @@ async function readCurrent(env) {
     await env.DATA.put('current', await compressText(JSON.stringify(safeCurrent)))
     await env.DATA.delete('previous')
   }
+  currentCache = safeCurrent
+  currentCacheExpiresAt = Date.now() + CURRENT_CACHE_TTL_MS
   return safeCurrent
 }
 
@@ -215,6 +221,8 @@ async function handleUpload(request, env) {
     await env.DATA.put('previous', await compressText(JSON.stringify(safePrevious)))
   }
   await env.DATA.put('current', compressed)
+  currentCache = payload
+  currentCacheExpiresAt = Date.now() + CURRENT_CACHE_TTL_MS
 
   return json({ ok: true, metadata: payload.metadata })
 }
