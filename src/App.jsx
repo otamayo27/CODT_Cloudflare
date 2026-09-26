@@ -209,11 +209,13 @@ const TYPE_PALETTE = [
   { background:'#f0fdfa', border:'#99f6e4', ink:'#0f766e', marker:'#0d9488' },
 ]
 const TYPE_COLORS = {
-  // Conexiones nuevas: color destacado y panel superior en el mapa.
-  ZCON: { background:'#eff8ff', border:'#84caff', ink:'#175cd3', marker:'#2563eb' },
-  // Desconexión y reconexión comparten familia cromática, con tonos distinguibles.
-  ZDES: { background:'#f0fdfa', border:'#99f6e4', ink:'#0f766e', marker:'#0f766e' },
-  ZREC: { background:'#ecfeff', border:'#67e8f9', ink:'#0e7490', marker:'#22b8cf' },
+  // Colores operativos fijos: no dependen del orden ni del contenido de la base.
+  ZCON:  { background:'#edfff1', border:'#86e99d', ink:'#087c26', marker:'#0FB837' },
+  ZDES:  { background:'#fff0f1', border:'#ff9ca4', ink:'#b20d19', marker:'#F72533' },
+  ZDESC: { background:'#fff0f1', border:'#ff9ca4', ink:'#b20d19', marker:'#F72533' },
+  ZREC:  { background:'#fff1f2', border:'#f7b0b5', ink:'#a53d45', marker:'#F2777F' },
+  ZCOR:  { background:'#fffbea', border:'#fae169', ink:'#725d00', marker:'#FAE169' },
+  ZPRE:  { background:'#fff0fd', border:'#fa9cec', ink:'#a71992', marker:'#FA69E7' },
 }
 function typeColor(type) {
   const normalized=clean(type).toLocaleLowerCase('es')
