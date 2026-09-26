@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
-import { CircleMarker, MapContainer, Pane, Popup, TileLayer, useMap } from 'react-leaflet'
+import { CircleMarker, MapContainer, Pane, Popup, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet'
 import {
   AlertTriangle, ArrowLeft, Building2, CheckCircle2, ChevronRight,
   Database, ExternalLink, LocateFixed, MapPinned, Navigation, Phone,
@@ -16,6 +16,14 @@ import { personnelByResponsible } from './personnel'
 // consume innecesariamente la cuota gratuita. Diez minutos mantiene una vista
 // suficientemente fresca y deja el botón manual para actualizaciones urgentes.
 const AUTO_REFRESH_MS = 10 * 60_000
+const MAP_LABEL_RADIUS_METERS = 500
+const INITIAL_FILTERS = {
+  company: '',
+  responsible: '',
+  query: '',
+  selectedType: '',
+  selectedActivity: '',
+}
 
 async function apiJson(url, options = {}) {
   const response = await fetch(url, {
@@ -71,6 +79,23 @@ function FitMap({ rows }) {
     if (points.length === 1) map.setView(points[0], 16)
     else map.fitBounds(points, { padding: [28, 28], maxZoom: 15 })
   }, [rows, map])
+  return null
+}
+
+function MapLabelVisibility({ onChange }) {
+  const map = useMapEvents({
+    zoomend: update,
+    moveend: update,
+    resize: update,
+  })
+  function update() {
+    const center=map.getCenter()
+    const bounds=map.getBounds()
+    const eastDistance=map.distance(center,{lat:center.lat,lng:bounds.getEast()})
+    const westDistance=map.distance(center,{lat:center.lat,lng:bounds.getWest()})
+    onChange(Math.max(eastDistance,westDistance)<=MAP_LABEL_RADIUS_METERS)
+  }
+  useEffect(()=>{update()},[map])
   return null
 }
 
@@ -211,10 +236,11 @@ function typeStyle(type) {
 function activity(row){return clean(row['Clase de actividad PM'])||clean(row.Descripción)||'Sin actividad'}
 
 function OrdersMap({ rows, onSelect }) {
+  const [showOrderLabels,setShowOrderLabels]=useState(false)
   const mapped=rows.filter(r=>validCoordinate(r['Latitud recomendada'],r['Longitud recomendada']))
   const legend=useMemo(()=>[...new Set(mapped.map(orderType))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[mapped])
-  const renderMarker=(row,idx)=>{const color=typeColor(orderType(row));return <CircleMarker key={`${clean(row.Orden)}-${idx}`} pane={isNewService(row)?'new-service-markers':'markerPane'} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={isNewService(row)?8:7} pathOptions={{color:'#fff',weight:isNewService(row)?3:2,fillColor:color.marker,fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}><Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span><strong style={{color:color.ink}}>{orderType(row)}</strong><span>{activity(row)}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>}
-  return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={mapped}/><Pane name="new-service-markers" style={{zIndex:640}}/>{mapped.filter(row=>!isNewService(row)).map(renderMarker)}{mapped.filter(isNewService).map(renderMarker)}</MapContainer></div>
+  const renderMarker=(row,idx)=>{const color=typeColor(orderType(row));return <CircleMarker key={`${clean(row.Orden)}-${idx}`} pane={isNewService(row)?'new-service-markers':'markerPane'} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={isNewService(row)?8:7} pathOptions={{color:'#fff',weight:isNewService(row)?3:2,fillColor:color.marker,fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}>{showOrderLabels&&<Tooltip permanent direction="top" offset={[0,-8]} opacity={1} className="order-map-label">OT {clean(row.Orden)}</Tooltip>}<Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span><strong style={{color:color.ink}}>{orderType(row)}</strong><span>{activity(row)}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>}
+  return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={mapped}/><MapLabelVisibility onChange={setShowOrderLabels}/><Pane name="new-service-markers" style={{zIndex:640}}/>{mapped.filter(row=>!isNewService(row)).map(renderMarker)}{mapped.filter(isNewService).map(renderMarker)}</MapContainer></div>
 }
 
 function TypeSummary({ rows, selectedType, onSelect }) {
@@ -224,12 +250,9 @@ function TypeSummary({ rows, selectedType, onSelect }) {
   return <section className="type-dashboard" aria-label="Órdenes por tipo"><button className={`type-card type-color-all ${selectedType===''?'active':''}`} onClick={()=>onSelect('')}><Layers3 size={18}/><strong>{rows.length}</strong><span>Todas</span></button>{data.map(([type,count])=><button key={type} style={typeStyle(type)} className={`type-card categorized ${selectedType===type?'active':''}`} onClick={()=>onSelect(selectedType===type?'':type)}><span className="type-code">{type.replace('Orden ','').slice(0,18)}</span><strong>{count}</strong><span>pendientes</span></button>)}</section>
 }
 
-function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh, refreshing, onAdmin }) {
-  const [company,setCompany]=useState('')
-  const [responsible,setResponsible]=useState('')
-  const [query,setQuery]=useState('')
-  const [selectedType,setSelectedType]=useState('')
-  const [selectedActivity,setSelectedActivity]=useState('')
+function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh, refreshing, onAdmin, filters, setFilters }) {
+  const {company,responsible,query,selectedType,selectedActivity}=filters
+  const updateFilters=changes=>setFilters(current=>({...current,...changes}))
 
   const companies=useMemo(()=>[...new Set(rows.map(r=>clean(r.Empresa)||'DESCONOCIDO'))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[rows])
   const companyRows=useMemo(()=>rows.filter(r=>!company||(clean(r.Empresa)||'DESCONOCIDO')===company),[rows,company])
@@ -254,11 +277,11 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
 
     <section className="welcome-panel"><div className="welcome-copy"><span className="eyebrow light">Base operativa consolidada</span><h2>Todo lo pendiente de ejecutar, separado por tipo de orden.</h2><p>Selecciona la dupla y luego el tipo de orden para organizar la jornada.</p></div><div className="database-card"><Database size={20}/><strong>{rows.length}</strong><span>órdenes activas</span><small>Actualizado {formatUpdateDate(metadata.uploadedAt)}</small></div></section>
 
-    <section className="filters-card"><div className="field"><label><Building2 size={16}/> Empresa</label><select value={company} onChange={e=>{setCompany(e.target.value);setResponsible('');setSelectedType('');setSelectedActivity('')}}><option value="">Todas las empresas</option>{companies.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="field"><label><UserRound size={16}/> Dupla / responsable</label><select value={responsible} onChange={e=>{setResponsible(e.target.value);setSelectedType('');setSelectedActivity('')}}><option value="">Todas las duplas</option>{responsibles.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="field search-field"><label><Search size={16}/> Buscar</label><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="OT, distrito, empresa, dupla, tipo o actividad"/></div></section>
+    <section className="filters-card"><div className="field"><label><Building2 size={16}/> Empresa</label><select value={company} onChange={e=>updateFilters({company:e.target.value,responsible:'',selectedType:'',selectedActivity:''})}><option value="">Todas las empresas</option>{companies.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="field"><label><UserRound size={16}/> Dupla / responsable</label><select value={responsible} onChange={e=>updateFilters({responsible:e.target.value,selectedType:'',selectedActivity:''})}><option value="">Todas las duplas</option>{responsibles.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="field search-field"><label><Search size={16}/> Buscar</label><input value={query} onChange={e=>updateFilters({query:e.target.value})} placeholder="OT, distrito, empresa, dupla, tipo o actividad"/></div></section>
 
-    <TypeSummary rows={responsibleRows} selectedType={selectedType} onSelect={type=>{setSelectedType(type);setSelectedActivity('')}}/>
+    <TypeSummary rows={responsibleRows} selectedType={selectedType} onSelect={type=>updateFilters({selectedType:type,selectedActivity:''})}/>
 
-    <section className="filters-card secondary-filters"><div className="field"><label>Actividad / trabajo</label><select value={selectedActivity} onChange={e=>setSelectedActivity(e.target.value)}><option value="">Todas las actividades</option>{activities.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="selection-summary"><strong>{filtered.length}</strong><span>órdenes visibles</span><small>{selectedType||'Todos los tipos'}{selectedActivity?` · ${selectedActivity}`:''}</small></div></section>
+    <section className="filters-card secondary-filters"><div className="field"><label>Actividad / trabajo</label><select value={selectedActivity} onChange={e=>updateFilters({selectedActivity:e.target.value})}><option value="">Todas las actividades</option>{activities.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="selection-summary"><strong>{filtered.length}</strong><span>órdenes visibles</span><small>{selectedType||'Todos los tipos'}{selectedActivity?` · ${selectedActivity}`:''}</small></div></section>
 
     <section className="section-block"><div className="section-heading"><div><span className="eyebrow">Ubicación</span><h2>Mapa operativo</h2></div><span className="muted">{located} con coordenadas</span></div><OrdersMap rows={filtered} onSelect={onSelect}/></section>
 
@@ -300,6 +323,7 @@ export default function App() {
   const [accessRequired,setAccessRequired]=useState(false)
   const [adminOpen,setAdminOpen]=useState(false)
   const [selected,setSelected]=useState(null)
+  const [filters,setFilters]=useState(INITIAL_FILTERS)
   const [error,setError]=useState('')
   const [refreshing,setRefreshing]=useState(false)
   const {canInstall,install}=useInstallPrompt()
@@ -320,5 +344,5 @@ export default function App() {
   if(error)return <ErrorScreen message={error} onRetry={()=>refresh(true)}/>
   if(!rows)return <LoadingScreen/>
   if(selected)return <DetailPage row={selected} onBack={()=>setSelected(null)}/>
-  return <><OrdersPage rows={rows} metadata={metadata} onSelect={setSelected} canInstall={canInstall} onInstall={install} onRefresh={()=>refresh(false)} refreshing={refreshing} onAdmin={()=>setAdminOpen(true)}/>{adminOpen&&<AdminPanel initialRole={role} onClose={()=>setAdminOpen(false)} onUploaded={async()=>{setRole('admin');await refresh(false)}}/>}</>
+  return <><OrdersPage rows={rows} metadata={metadata} onSelect={setSelected} canInstall={canInstall} onInstall={install} onRefresh={()=>refresh(false)} refreshing={refreshing} onAdmin={()=>setAdminOpen(true)} filters={filters} setFilters={setFilters}/>{adminOpen&&<AdminPanel initialRole={role} onClose={()=>setAdminOpen(false)} onUploaded={async()=>{setRole('admin');await refresh(false)}}/>}</>
 }
