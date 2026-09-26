@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
-import { CircleMarker, MapContainer, Pane, Popup, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet'
+import { CircleMarker, MapContainer, Pane, Polyline, Popup, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet'
 import {
   AlertTriangle, ArrowLeft, Building2, CheckCircle2, ChevronRight,
   Database, ExternalLink, LocateFixed, MapPinned, Navigation, Phone,
   RefreshCw, Search, Smartphone, UserRound, WifiOff, Zap, LockKeyhole, UploadCloud, X,
-  Layers3
+  Layers3, Route
 } from 'lucide-react'
 import {
   clean, getInfoQuality, mapsUrl, validCoordinate, wazeUrl
@@ -230,13 +230,77 @@ function typeStyle(type) {
 }
 function activity(row){return clean(row['Clase de actividad PM'])||clean(row.Descripción)||'Sin actividad'}
 
-function OrdersMap({ rows, onSelect }) {
+function elapsedDays(value){
+  const created=parseOrderDate(value)
+  if(!created)return -1
+  const today=new Date()
+  const start=Date.UTC(created.getFullYear(),created.getMonth(),created.getDate())
+  const end=Date.UTC(today.getFullYear(),today.getMonth(),today.getDate())
+  return Math.max(0,Math.floor((end-start)/86400000))
+}
+function orderPriority(row){
+  const type=orderType(row).toUpperCase()
+  if(type==='ZCON')return 0
+  if(type==='ZREC')return 1
+  if(type==='ZDES'||type==='ZDESC')return 2
+  return 3
+}
+function distanceBetween(left,right){
+  const toRadians=value=>value*Math.PI/180
+  const lat1=toRadians(Number(left['Latitud recomendada']))
+  const lat2=toRadians(Number(right['Latitud recomendada']))
+  const deltaLat=lat2-lat1
+  const deltaLon=toRadians(Number(right['Longitud recomendada'])-Number(left['Longitud recomendada']))
+  const a=Math.sin(deltaLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(deltaLon/2)**2
+  return 6371000*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))
+}
+function sequenceByProximity(rows){
+  if(rows.length<2)return rows
+  const pending=rows.slice(1)
+  const ordered=[rows[0]]
+  while(pending.length){
+    const last=ordered[ordered.length-1]
+    let nearestIndex=0
+    for(let index=1;index<pending.length;index+=1){
+      if(distanceBetween(last,pending[index])<distanceBetween(last,pending[nearestIndex]))nearestIndex=index
+    }
+    ordered.push(pending.splice(nearestIndex,1)[0])
+  }
+  return ordered
+}
+function recommendDailyRoute(rows,limit=15){
+  const located=rows.filter(row=>validCoordinate(row['Latitud recomendada'],row['Longitud recomendada']))
+  if(!located.length)return []
+  const overdueConnections=located.filter(row=>orderType(row).toUpperCase()==='ZCON'&&elapsedDays(row['Fecha de creación'])>4).sort((a,b)=>elapsedDays(b['Fecha de creación'])-elapsedDays(a['Fecha de creación']))
+  const selected=overdueConnections.slice(0,limit)
+  const selectedIds=new Set(selected.map(row=>clean(row.Orden)))
+  const remaining=located.filter(row=>!selectedIds.has(clean(row.Orden)))
+  if(!selected.length&&remaining.length){
+    remaining.sort((a,b)=>orderPriority(a)-orderPriority(b)||elapsedDays(b['Fecha de creación'])-elapsedDays(a['Fecha de creación']))
+    selected.push(remaining.shift())
+  }
+  while(selected.length<limit&&remaining.length){
+    let nearestIndex=0
+    let nearestDistance=Infinity
+    remaining.forEach((candidate,index)=>{
+      const distance=Math.min(...selected.map(chosen=>distanceBetween(chosen,candidate)))
+      if(distance<nearestDistance){nearestDistance=distance;nearestIndex=index}
+    })
+    selected.push(remaining.splice(nearestIndex,1)[0])
+  }
+  return sequenceByProximity(selected)
+}
+
+function OrdersMap({ rows, routeRows, onSelect }) {
   const [showOrderLabels,setShowOrderLabels]=useState(false)
   const [initialZoom,setInitialZoom]=useState(null)
   const mapped=useMemo(()=>rows.filter(r=>validCoordinate(r['Latitud recomendada'],r['Longitud recomendada'])),[rows])
+  const routePositions=useMemo(()=>routeRows.map(row=>[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]),[routeRows])
+  const routeIndex=useMemo(()=>new Map(routeRows.map((row,index)=>[clean(row.Orden),index+1])),[routeRows])
   const legend=useMemo(()=>[...new Set(mapped.map(orderType))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[mapped])
-  const renderMarker=(row,idx)=>{const color=typeColor(orderType(row));return <CircleMarker key={`${clean(row.Orden)}-${idx}`} pane={isNewService(row)?'new-service-markers':'markerPane'} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={isNewService(row)?8:7} pathOptions={{color:'#fff',weight:isNewService(row)?3:2,fillColor:color.marker,fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}>{showOrderLabels&&<Tooltip permanent direction="top" offset={[0,-8]} opacity={1} className="order-map-label">{clean(row.Orden)}</Tooltip>}<Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span><strong style={{color:color.ink}}>{orderType(row)}</strong><span>{activity(row)}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>}
-  return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={mapped} onFit={zoom=>{setInitialZoom(zoom);setShowOrderLabels(false)}}/><MapLabelVisibility initialZoom={initialZoom} onChange={setShowOrderLabels}/><Pane name="new-service-markers" style={{zIndex:640}}/>{mapped.filter(row=>!isNewService(row)).map(renderMarker)}{mapped.filter(isNewService).map(renderMarker)}</MapContainer></div>
+  const renderMarker=(row,idx)=>{const color=typeColor(orderType(row));const routeNumber=routeIndex.get(clean(row.Orden));const inRoute=Boolean(routeNumber);return <CircleMarker key={`${clean(row.Orden)}-${idx}`} pane={isNewService(row)?'new-service-markers':'markerPane'} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={inRoute?10:isNewService(row)?8:7} pathOptions={{color:inRoute?'#111827':'#fff',weight:inRoute?4:isNewService(row)?3:2,fillColor:color.marker,fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}>{inRoute?<Tooltip permanent direction="top" offset={[0,-10]} opacity={1} className="route-map-label">{routeNumber}</Tooltip>:showOrderLabels&&<Tooltip permanent direction="top" offset={[0,-8]} opacity={1} className="order-map-label">{clean(row.Orden)}</Tooltip>}<Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span>{inRoute&&<span className="popup-route">Parada {routeNumber} de {routeRows.length}</span>}<strong style={{color:color.ink}}>{orderType(row)}</strong><span>{activity(row)}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>}
+  const fitRows=routeRows.length?routeRows:mapped
+  return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={fitRows} onFit={zoom=>{setInitialZoom(zoom);setShowOrderLabels(false)}}/><MapLabelVisibility initialZoom={initialZoom} onChange={setShowOrderLabels}/><Pane name="new-service-markers" style={{zIndex:640}}/>{routePositions.length>1&&<Polyline positions={routePositions} pathOptions={{color:'#111827',weight:4,opacity:.72,dashArray:'8 8'}}/>}{mapped.filter(row=>!isNewService(row)).map(renderMarker)}{mapped.filter(isNewService).map(renderMarker)}</MapContainer></div>
 }
 
 function TypeSummary({ rows, selectedType, onSelect }) {
@@ -246,9 +310,9 @@ function TypeSummary({ rows, selectedType, onSelect }) {
   return <section className="type-dashboard" aria-label="Órdenes por tipo"><button className={`type-card type-color-all ${selectedType===''?'active':''}`} onClick={()=>onSelect('')}><Layers3 size={18}/><strong>{rows.length}</strong><span>Todas</span></button>{data.map(([type,count])=><button key={type} style={typeStyle(type)} className={`type-card categorized ${selectedType===type?'active':''}`} onClick={()=>onSelect(selectedType===type?'':type)}><span className="type-code">{type.replace('Orden ','').slice(0,18)}</span><strong>{count}</strong><span>pendientes</span></button>)}</section>
 }
 
-function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh, refreshing, onAdmin, filters, setFilters }) {
+function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh, refreshing, onAdmin, filters, setFilters, routeOrderIds, setRouteOrderIds }) {
   const {company,responsible,query,selectedType,selectedActivity}=filters
-  const updateFilters=changes=>setFilters(current=>({...current,...changes}))
+  const updateFilters=changes=>{setFilters(current=>({...current,...changes}));setRouteOrderIds([])}
 
   const companies=useMemo(()=>[...new Set(rows.map(r=>clean(r.Empresa)||'DESCONOCIDO'))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[rows])
   const companyRows=useMemo(()=>rows.filter(r=>!company||(clean(r.Empresa)||'DESCONOCIDO')===company),[rows,company])
@@ -262,11 +326,16 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
     const searchOk=!q||[row.Orden,row.Distrito,row.Calle,row.Empresa,row['Pto.tbjo.resp.'],orderType(row),activity(row)].some(v=>clean(v).toLowerCase().includes(q))
     return typeOk&&activityOk&&searchOk
   }).sort((a,b)=>
-    String(orderType(a)).localeCompare(String(orderType(b))) ||
+    orderPriority(a)-orderPriority(b) ||
+    elapsedDays(b['Fecha de creación'])-elapsedDays(a['Fecha de creación']) ||
     String(activity(a)).localeCompare(String(activity(b)))
   ),[responsibleRows,selectedType,selectedActivity,query])
 
   const located=filtered.filter(r=>validCoordinate(r['Latitud recomendada'],r['Longitud recomendada'])).length
+  const filteredById=useMemo(()=>new Map(filtered.map(row=>[clean(row.Orden),row])),[filtered])
+  const routeRows=useMemo(()=>routeOrderIds.map(id=>filteredById.get(id)).filter(Boolean),[routeOrderIds,filteredById])
+  const routePositionById=useMemo(()=>new Map(routeRows.map((row,index)=>[clean(row.Orden),index+1])),[routeRows])
+  const buildRoute=()=>setRouteOrderIds(recommendDailyRoute(filtered).map(row=>clean(row.Orden)))
 
   return <main className="app-shell">
     <header className="mobile-topbar"><div className="brand-line"><div className="mini-logo"><MapPinned size={22}/></div><div><span className="eyebrow">GeoOperación</span><h1>Órdenes pendientes</h1></div></div><div className="top-actions"><button className="install-button admin-button" onClick={onAdmin}><LockKeyhole size={16}/> Administrar base</button><button className={`icon-button ${refreshing?'spinning':''}`} onClick={onRefresh}><RefreshCw size={18}/></button>{canInstall&&<button className="install-button" onClick={onInstall}><Smartphone size={16}/> Instalar</button>}</div></header>
@@ -279,9 +348,9 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
 
     <section className="filters-card secondary-filters"><div className="field"><label>Actividad / trabajo</label><select value={selectedActivity} onChange={e=>updateFilters({selectedActivity:e.target.value})}><option value="">Todas las actividades</option>{activities.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="selection-summary"><strong>{filtered.length}</strong><span>órdenes visibles</span><small>{selectedType||'Todos los tipos'}{selectedActivity?` · ${selectedActivity}`:''}</small></div></section>
 
-    <section className="section-block"><div className="section-heading"><div><span className="eyebrow">Ubicación</span><h2>Mapa operativo</h2></div><span className="muted">{located} con coordenadas</span></div><OrdersMap rows={filtered} onSelect={onSelect}/></section>
+    <section className="section-block"><div className="section-heading route-heading"><div><span className="eyebrow">Ubicación</span><h2>Mapa operativo</h2></div><div className="route-actions"><span className="muted">{located} con coordenadas</span><button className="route-button" onClick={buildRoute} disabled={!located}><Route size={17}/> Ruta recomendada</button></div></div>{routeRows.length>0&&<div className="route-panel"><div><strong>Ruta diaria · {routeRows.length} órdenes</strong><span>Prioriza conexiones ZCON con más de 4 días y completa con órdenes cercanas.</span></div><div className="route-stops">{routeRows.map((row,index)=><button key={clean(row.Orden)} onClick={()=>onSelect(row)}><b>{index+1}</b><span>{clean(row.Orden)}</span></button>)}</div><button className="clear-route" onClick={()=>setRouteOrderIds([])}>Quitar ruta</button></div>}<OrdersMap rows={filtered} routeRows={routeRows} onSelect={onSelect}/></section>
 
-    <section className="orders-section"><div className="section-heading"><div><span className="eyebrow">Ejecución</span><h2>Órdenes por tipo</h2></div><span className="muted">{filtered.length} visibles</span></div><div className="orders-list">{filtered.map((row,idx)=>{const quality=getInfoQuality(row);return <button className="order-card" key={`${clean(row.Orden)}-${idx}`} onClick={()=>onSelect(row)}><div className="urgency-strip"/><div className="order-card-main"><div className="order-title-line"><span className="order-number">OT {clean(row.Orden)||'—'}</span><span className={`status-chip ${quality.toLowerCase().replace('í','i')}`}>{quality}</span></div><div className="type-chip">{orderType(row)}</div><div className="activity-title">{activity(row)}</div><div className="order-location"><MapPinned size={14}/> {clean(row.Distrito)||'Sin distrito'}{clean(row.Calle)?` · ${clean(row.Calle)}`:''}</div></div><ChevronRight className="chevron" size={22}/></button>})}{!filtered.length&&<div className="empty">No hay órdenes que coincidan con los filtros actuales.</div>}</div></section>
+    <section className="orders-section"><div className="section-heading"><div><span className="eyebrow">Ejecución</span><h2>Órdenes por tipo</h2></div><span className="muted">{filtered.length} visibles</span></div><div className="orders-list">{filtered.map((row,idx)=>{const quality=getInfoQuality(row);const days=elapsedDays(row['Fecha de creación']);const routePosition=routePositionById.get(clean(row.Orden));return <button className={`order-card ${routePosition?'route-selected':''}`} key={`${clean(row.Orden)}-${idx}`} onClick={()=>onSelect(row)}><div className="urgency-strip"/><div className="order-card-main"><div className="order-title-line"><span className="order-number">OT {clean(row.Orden)||'—'}</span><span className="order-badges">{routePosition&&<span className="route-chip">Ruta {routePosition}</span>}{days>=0&&<span className="age-chip">{days} d</span>}<span className={`status-chip ${quality.toLowerCase().replace('í','i')}`}>{quality}</span></span></div><div className="type-chip">{orderType(row)}</div><div className="activity-title">{activity(row)}</div><div className="order-location"><MapPinned size={14}/> {clean(row.Distrito)||'Sin distrito'}{clean(row.Calle)?` · ${clean(row.Calle)}`:''}</div></div><ChevronRight className="chevron" size={22}/></button>})}{!filtered.length&&<div className="empty">No hay órdenes que coincidan con los filtros actuales.</div>}</div></section>
   </main>
 }
 
@@ -297,10 +366,8 @@ function parseOrderDate(value){
   return Number.isNaN(date.getTime())?null:date
 }
 function orderAge(value){
-  const created=parseOrderDate(value)
-  if(!created)return 'Fecha de creación no disponible'
-  const today=new Date(); const start=Date.UTC(created.getFullYear(),created.getMonth(),created.getDate()); const end=Date.UTC(today.getFullYear(),today.getMonth(),today.getDate())
-  const days=Math.max(0,Math.floor((end-start)/86400000))
+  const days=elapsedDays(value)
+  if(days<0)return 'Fecha de creación no disponible'
   return `${days.toLocaleString('es-SV')} ${days===1?'día calendario':'días calendario'}`
 }
 function formatOrderDate(value){const date=parseOrderDate(value);return date?new Intl.DateTimeFormat('es-SV',{day:'2-digit',month:'long',year:'numeric'}).format(date):'—'}
@@ -320,6 +387,7 @@ export default function App() {
   const [adminOpen,setAdminOpen]=useState(false)
   const [selected,setSelected]=useState(null)
   const [filters,setFilters]=useState(INITIAL_FILTERS)
+  const [routeOrderIds,setRouteOrderIds]=useState([])
   const [error,setError]=useState('')
   const [refreshing,setRefreshing]=useState(false)
   const {canInstall,install}=useInstallPrompt()
@@ -340,5 +408,5 @@ export default function App() {
   if(error)return <ErrorScreen message={error} onRetry={()=>refresh(true)}/>
   if(!rows)return <LoadingScreen/>
   if(selected)return <DetailPage row={selected} onBack={()=>setSelected(null)}/>
-  return <><OrdersPage rows={rows} metadata={metadata} onSelect={setSelected} canInstall={canInstall} onInstall={install} onRefresh={()=>refresh(false)} refreshing={refreshing} onAdmin={()=>setAdminOpen(true)} filters={filters} setFilters={setFilters}/>{adminOpen&&<AdminPanel initialRole={role} onClose={()=>setAdminOpen(false)} onUploaded={async()=>{setRole('admin');await refresh(false)}}/>}</>
+  return <><OrdersPage rows={rows} metadata={metadata} onSelect={setSelected} canInstall={canInstall} onInstall={install} onRefresh={()=>refresh(false)} refreshing={refreshing} onAdmin={()=>setAdminOpen(true)} filters={filters} setFilters={setFilters} routeOrderIds={routeOrderIds} setRouteOrderIds={setRouteOrderIds}/>{adminOpen&&<AdminPanel initialRole={role} onClose={()=>setAdminOpen(false)} onUploaded={async()=>{setRole('admin');await refresh(false)}}/>}</>
 }
