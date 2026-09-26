@@ -16,7 +16,7 @@ import { personnelByResponsible } from './personnel'
 // consume innecesariamente la cuota gratuita. Diez minutos mantiene una vista
 // suficientemente fresca y deja el botón manual para actualizaciones urgentes.
 const AUTO_REFRESH_MS = 10 * 60_000
-const MAP_LABEL_RADIUS_METERS = 500
+const MAP_LABEL_ZOOM_STEPS = 5
 const INITIAL_FILTERS = {
   company: '',
   responsible: '',
@@ -68,7 +68,7 @@ function useInstallPrompt() {
   return { canInstall: !!promptEvent, install }
 }
 
-function FitMap({ rows }) {
+function FitMap({ rows, onFit }) {
   const map = useMap()
   useEffect(() => {
     const points = rows
@@ -78,24 +78,19 @@ function FitMap({ rows }) {
     if (!points.length) return
     if (points.length === 1) map.setView(points[0], 16)
     else map.fitBounds(points, { padding: [28, 28], maxZoom: 15 })
+    onFit(map.getZoom())
   }, [rows, map])
   return null
 }
 
-function MapLabelVisibility({ onChange }) {
+function MapLabelVisibility({ initialZoom, onChange }) {
   const map = useMapEvents({
     zoomend: update,
-    moveend: update,
-    resize: update,
   })
   function update() {
-    const center=map.getCenter()
-    const bounds=map.getBounds()
-    const eastDistance=map.distance(center,{lat:center.lat,lng:bounds.getEast()})
-    const westDistance=map.distance(center,{lat:center.lat,lng:bounds.getWest()})
-    onChange(Math.max(eastDistance,westDistance)<=MAP_LABEL_RADIUS_METERS)
+    onChange(initialZoom!==null&&map.getZoom()>=initialZoom+MAP_LABEL_ZOOM_STEPS)
   }
-  useEffect(()=>{update()},[map])
+  useEffect(()=>{update()},[map,initialZoom])
   return null
 }
 
@@ -237,10 +232,11 @@ function activity(row){return clean(row['Clase de actividad PM'])||clean(row.Des
 
 function OrdersMap({ rows, onSelect }) {
   const [showOrderLabels,setShowOrderLabels]=useState(false)
-  const mapped=rows.filter(r=>validCoordinate(r['Latitud recomendada'],r['Longitud recomendada']))
+  const [initialZoom,setInitialZoom]=useState(null)
+  const mapped=useMemo(()=>rows.filter(r=>validCoordinate(r['Latitud recomendada'],r['Longitud recomendada'])),[rows])
   const legend=useMemo(()=>[...new Set(mapped.map(orderType))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[mapped])
-  const renderMarker=(row,idx)=>{const color=typeColor(orderType(row));return <CircleMarker key={`${clean(row.Orden)}-${idx}`} pane={isNewService(row)?'new-service-markers':'markerPane'} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={isNewService(row)?8:7} pathOptions={{color:'#fff',weight:isNewService(row)?3:2,fillColor:color.marker,fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}>{showOrderLabels&&<Tooltip permanent direction="top" offset={[0,-8]} opacity={1} className="order-map-label">OT {clean(row.Orden)}</Tooltip>}<Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span><strong style={{color:color.ink}}>{orderType(row)}</strong><span>{activity(row)}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>}
-  return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={mapped}/><MapLabelVisibility onChange={setShowOrderLabels}/><Pane name="new-service-markers" style={{zIndex:640}}/>{mapped.filter(row=>!isNewService(row)).map(renderMarker)}{mapped.filter(isNewService).map(renderMarker)}</MapContainer></div>
+  const renderMarker=(row,idx)=>{const color=typeColor(orderType(row));return <CircleMarker key={`${clean(row.Orden)}-${idx}`} pane={isNewService(row)?'new-service-markers':'markerPane'} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={isNewService(row)?8:7} pathOptions={{color:'#fff',weight:isNewService(row)?3:2,fillColor:color.marker,fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}>{showOrderLabels&&<Tooltip permanent direction="top" offset={[0,-8]} opacity={1} className="order-map-label">{clean(row.Orden)}</Tooltip>}<Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span><strong style={{color:color.ink}}>{orderType(row)}</strong><span>{activity(row)}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>}
+  return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={mapped} onFit={zoom=>{setInitialZoom(zoom);setShowOrderLabels(false)}}/><MapLabelVisibility initialZoom={initialZoom} onChange={setShowOrderLabels}/><Pane name="new-service-markers" style={{zIndex:640}}/>{mapped.filter(row=>!isNewService(row)).map(renderMarker)}{mapped.filter(isNewService).map(renderMarker)}</MapContainer></div>
 }
 
 function TypeSummary({ rows, selectedType, onSelect }) {
