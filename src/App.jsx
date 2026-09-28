@@ -20,7 +20,7 @@ const INITIAL_FILTERS = {
   company: '',
   responsible: '',
   query: '',
-  selectedType: '',
+  selectedTypes: [],
   selectedActivity: '',
 }
 
@@ -290,24 +290,24 @@ function OrdersMap({ rows, routeRows, onSelect }) {
   return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={fitRows}/><Pane name="new-service-markers" style={{zIndex:640}}/>{routePositions.length>1&&<Polyline positions={routePositions} pathOptions={{color:'#111827',weight:4,opacity:.72,dashArray:'8 8'}}/>}{mapped.filter(row=>!isNewService(row)).map(renderMarker)}{mapped.filter(isNewService).map(renderMarker)}</MapContainer></div>
 }
 
-function TypeSummary({ rows, selectedType, onSelect }) {
+function TypeSummary({ rows, selectedTypes, onToggle, onClear }) {
   const data=useMemo(()=>{
     const counts=new Map();rows.forEach(r=>{const t=orderType(r);counts.set(t,(counts.get(t)||0)+1)});return [...counts.entries()].sort((a,b)=>a[0].localeCompare(b[0],'es',{sensitivity:'base'}))
   },[rows])
-  return <section className="type-dashboard" aria-label="Órdenes por tipo"><button className={`type-card type-color-all ${selectedType===''?'active':''}`} onClick={()=>onSelect('')}><Layers3 size={18}/><strong>{rows.length}</strong><span>Todas</span></button>{data.map(([type,count])=><button key={type} style={typeStyle(type)} className={`type-card categorized ${selectedType===type?'active':''}`} onClick={()=>onSelect(selectedType===type?'':type)}><span className="type-code">{type.replace('Orden ','').slice(0,18)}</span><strong>{count}</strong><span>pendientes</span></button>)}</section>
+  return <section className="type-dashboard" aria-label="Órdenes por tipo"><button className={`type-card type-color-all ${selectedTypes.length===0?'active':''}`} onClick={onClear}><Layers3 size={18}/><strong>{rows.length}</strong><span>Todas</span></button>{data.map(([type,count])=><button key={type} style={typeStyle(type)} className={`type-card categorized ${selectedTypes.includes(type)?'active':''}`} aria-pressed={selectedTypes.includes(type)} onClick={()=>onToggle(type)}><span className="type-code">{type.replace('Orden ','').slice(0,18)}</span><strong>{count}</strong><span>pendientes</span></button>)}</section>
 }
 
 function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh, refreshing, onAdmin, filters, setFilters, routeOrderIds, setRouteOrderIds }) {
-  const {company,responsible,query,selectedType,selectedActivity}=filters
+  const {company,responsible,query,selectedTypes,selectedActivity}=filters
   const updateFilters=changes=>{setFilters(current=>({...current,...changes}));setRouteOrderIds([])}
 
   const companies=useMemo(()=>[...new Set(rows.map(r=>clean(r.Empresa)||'DESCONOCIDO'))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[rows])
   const companyRows=useMemo(()=>rows.filter(r=>!company||(clean(r.Empresa)||'DESCONOCIDO')===company),[rows,company])
   const responsibles=useMemo(()=>[...new Set(companyRows.map(r=>clean(r['Pto.tbjo.resp.'])).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[companyRows])
   const responsibleRows=useMemo(()=>companyRows.filter(r=>!responsible||clean(r['Pto.tbjo.resp.'])===responsible),[companyRows,responsible])
-  const activities=useMemo(()=>[...new Set(responsibleRows.filter(r=>!selectedType||orderType(r)===selectedType).map(activity).filter(Boolean))].sort(),[responsibleRows,selectedType])
+  const activities=useMemo(()=>[...new Set(responsibleRows.filter(r=>selectedTypes.length===0||selectedTypes.includes(orderType(r))).map(activity).filter(Boolean))].sort(),[responsibleRows,selectedTypes])
   const filtered=useMemo(()=>responsibleRows.filter(row=>{
-    const typeOk=!selectedType||orderType(row)===selectedType
+    const typeOk=selectedTypes.length===0||selectedTypes.includes(orderType(row))
     const activityOk=!selectedActivity||activity(row)===selectedActivity
     const q=query.toLowerCase().trim()
     const searchOk=!q||[row.Orden,row.Distrito,row.Calle,row.Empresa,row['Pto.tbjo.resp.'],orderType(row),activity(row)].some(v=>clean(v).toLowerCase().includes(q))
@@ -316,7 +316,7 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
     orderPriority(a)-orderPriority(b) ||
     elapsedDays(b['Fecha de creación'])-elapsedDays(a['Fecha de creación']) ||
     String(activity(a)).localeCompare(String(activity(b)))
-  ),[responsibleRows,selectedType,selectedActivity,query])
+  ),[responsibleRows,selectedTypes,selectedActivity,query])
 
   const located=filtered.filter(r=>validCoordinate(r['Latitud recomendada'],r['Longitud recomendada'])).length
   const filteredById=useMemo(()=>new Map(filtered.map(row=>[clean(row.Orden),row])),[filtered])
@@ -329,11 +329,11 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
 
     <section className="welcome-panel"><div className="welcome-copy"><span className="eyebrow light">Base operativa consolidada</span><h2>Todo lo pendiente de ejecutar, separado por tipo de orden.</h2><p>Selecciona la dupla y luego el tipo de orden para organizar la jornada.</p></div><div className="database-card"><Database size={20}/><strong>{rows.length}</strong><span>órdenes activas</span><small>Actualizado {formatUpdateDate(metadata.uploadedAt)}</small></div></section>
 
-    <section className="filters-card"><div className="field"><label><Building2 size={16}/> Empresa</label><select value={company} onChange={e=>updateFilters({company:e.target.value,responsible:'',selectedType:'',selectedActivity:''})}><option value="">Todas las empresas</option>{companies.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="field"><label><UserRound size={16}/> Dupla / responsable</label><select value={responsible} onChange={e=>updateFilters({responsible:e.target.value,selectedType:'',selectedActivity:''})}><option value="">Todas las duplas</option>{responsibles.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="field search-field"><label><Search size={16}/> Buscar</label><input value={query} onChange={e=>updateFilters({query:e.target.value})} placeholder="OT, distrito, empresa, dupla, tipo o actividad"/></div></section>
+    <section className="filters-card"><div className="field"><label><Building2 size={16}/> Empresa</label><select value={company} onChange={e=>updateFilters({company:e.target.value,responsible:'',selectedTypes:[],selectedActivity:''})}><option value="">Todas las empresas</option>{companies.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="field"><label><UserRound size={16}/> Dupla / responsable</label><select value={responsible} onChange={e=>updateFilters({responsible:e.target.value,selectedTypes:[],selectedActivity:''})}><option value="">Todas las duplas</option>{responsibles.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="field search-field"><label><Search size={16}/> Buscar</label><input value={query} onChange={e=>updateFilters({query:e.target.value})} placeholder="OT, distrito, empresa, dupla, tipo o actividad"/></div></section>
 
-    <TypeSummary rows={responsibleRows} selectedType={selectedType} onSelect={type=>updateFilters({selectedType:type,selectedActivity:''})}/>
+    <TypeSummary rows={responsibleRows} selectedTypes={selectedTypes} onClear={()=>updateFilters({selectedTypes:[],selectedActivity:''})} onToggle={type=>updateFilters({selectedTypes:selectedTypes.includes(type)?selectedTypes.filter(item=>item!==type):[...selectedTypes,type],selectedActivity:''})}/>
 
-    <section className="filters-card secondary-filters"><div className="field"><label>Actividad / trabajo</label><select value={selectedActivity} onChange={e=>updateFilters({selectedActivity:e.target.value})}><option value="">Todas las actividades</option>{activities.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="selection-summary"><strong>{filtered.length}</strong><span>órdenes visibles</span><small>{selectedType||'Todos los tipos'}{selectedActivity?` · ${selectedActivity}`:''}</small></div></section>
+    <section className="filters-card secondary-filters"><div className="field"><label>Actividad / trabajo</label><select value={selectedActivity} onChange={e=>updateFilters({selectedActivity:e.target.value})}><option value="">Todas las actividades</option>{activities.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="selection-summary"><strong>{filtered.length}</strong><span>órdenes visibles</span><small>{selectedTypes.length?selectedTypes.join(' + '):'Todos los tipos'}{selectedActivity?` · ${selectedActivity}`:''}</small></div></section>
 
     <section className="section-block"><div className="section-heading route-heading"><div><span className="eyebrow">Ubicación</span><h2>Mapa operativo</h2></div><div className="route-actions"><span className="muted">{located} con coordenadas</span>{responsible&&<button className="route-button" onClick={buildRoute} disabled={!located}><Route size={17}/> Ruta recomendada</button>}</div></div>{responsible&&routeRows.length>0&&<div className="route-panel"><div><strong>Ruta diaria · {routeRows.length} órdenes</strong><span>Prioriza conexiones ZCON con más de 4 días y completa con órdenes cercanas.</span></div><div className="route-stops">{routeRows.map((row,index)=><button key={clean(row.Orden)} onClick={()=>onSelect(row)}><b>{index+1}</b><span>{clean(row.Orden)}</span></button>)}</div><button className="clear-route" onClick={()=>setRouteOrderIds([])}>Quitar ruta</button></div>}<OrdersMap rows={filtered} routeRows={responsible?routeRows:[]} onSelect={onSelect}/></section>
 
