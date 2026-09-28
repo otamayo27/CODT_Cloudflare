@@ -83,14 +83,14 @@ function FitMap({ rows, onFit }) {
   return null
 }
 
-function MapLabelVisibility({ initialZoom, onChange }) {
+function MapLabelVisibility({ initialZoom, enabled, onChange }) {
   const map = useMapEvents({
     zoomend: update,
   })
   function update() {
-    onChange(initialZoom!==null&&map.getZoom()>=initialZoom+MAP_LABEL_ZOOM_STEPS)
+    onChange(enabled&&initialZoom!==null&&map.getZoom()>=initialZoom+MAP_LABEL_ZOOM_STEPS)
   }
-  useEffect(()=>{update()},[map,initialZoom])
+  useEffect(()=>{update()},[map,initialZoom,enabled])
   return null
 }
 
@@ -293,7 +293,7 @@ function recommendDailyRoute(rows,limit=15){
   return sequenceByProximity(selected)
 }
 
-function OrdersMap({ rows, routeRows, onSelect }) {
+function OrdersMap({ rows, routeRows, onSelect, labelsEnabled }) {
   const [showOrderLabels,setShowOrderLabels]=useState(false)
   const [initialZoom,setInitialZoom]=useState(null)
   const mapped=useMemo(()=>rows.filter(r=>validCoordinate(r['Latitud recomendada'],r['Longitud recomendada'])),[rows])
@@ -302,7 +302,7 @@ function OrdersMap({ rows, routeRows, onSelect }) {
   const legend=useMemo(()=>[...new Set(mapped.map(orderType))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[mapped])
   const renderMarker=(row,idx)=>{const color=typeColor(orderType(row));const routeNumber=routeIndex.get(clean(row.Orden));const inRoute=Boolean(routeNumber);return <CircleMarker key={`${clean(row.Orden)}-${idx}`} pane={isNewService(row)?'new-service-markers':'markerPane'} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={inRoute?10:isNewService(row)?8:7} pathOptions={{color:inRoute?'#111827':'#fff',weight:inRoute?4:isNewService(row)?3:2,fillColor:color.marker,fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}>{inRoute?<Tooltip permanent direction="top" offset={[0,-10]} opacity={1} className="route-map-label">{routeNumber}</Tooltip>:showOrderLabels&&<Tooltip permanent direction="top" offset={[0,-8]} opacity={1} className="order-map-label">{clean(row.Orden)}</Tooltip>}<Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span>{inRoute&&<span className="popup-route">Parada {routeNumber} de {routeRows.length}</span>}<strong style={{color:color.ink}}>{orderType(row)}</strong><span>{activity(row)}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>}
   const fitRows=routeRows.length?routeRows:mapped
-  return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={fitRows} onFit={zoom=>{setInitialZoom(zoom);setShowOrderLabels(false)}}/><MapLabelVisibility initialZoom={initialZoom} onChange={setShowOrderLabels}/><Pane name="new-service-markers" style={{zIndex:640}}/>{routePositions.length>1&&<Polyline positions={routePositions} pathOptions={{color:'#111827',weight:4,opacity:.72,dashArray:'8 8'}}/>}{mapped.filter(row=>!isNewService(row)).map(renderMarker)}{mapped.filter(isNewService).map(renderMarker)}</MapContainer></div>
+  return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={fitRows} onFit={zoom=>{setInitialZoom(zoom);setShowOrderLabels(false)}}/><MapLabelVisibility initialZoom={initialZoom} enabled={labelsEnabled} onChange={setShowOrderLabels}/><Pane name="new-service-markers" style={{zIndex:640}}/>{routePositions.length>1&&<Polyline positions={routePositions} pathOptions={{color:'#111827',weight:4,opacity:.72,dashArray:'8 8'}}/>}{mapped.filter(row=>!isNewService(row)).map(renderMarker)}{mapped.filter(isNewService).map(renderMarker)}</MapContainer></div>
 }
 
 function TypeSummary({ rows, selectedType, onSelect }) {
@@ -350,7 +350,7 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
 
     <section className="filters-card secondary-filters"><div className="field"><label>Actividad / trabajo</label><select value={selectedActivity} onChange={e=>updateFilters({selectedActivity:e.target.value})}><option value="">Todas las actividades</option>{activities.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="selection-summary"><strong>{filtered.length}</strong><span>órdenes visibles</span><small>{selectedType||'Todos los tipos'}{selectedActivity?` · ${selectedActivity}`:''}</small></div></section>
 
-    <section className="section-block"><div className="section-heading route-heading"><div><span className="eyebrow">Ubicación</span><h2>Mapa operativo</h2></div><div className="route-actions"><span className="muted">{located} con coordenadas</span>{responsible&&<button className="route-button" onClick={buildRoute} disabled={!located}><Route size={17}/> Ruta recomendada</button>}</div></div>{responsible&&routeRows.length>0&&<div className="route-panel"><div><strong>Ruta diaria · {routeRows.length} órdenes</strong><span>Prioriza conexiones ZCON con más de 4 días y completa con órdenes cercanas.</span></div><div className="route-stops">{routeRows.map((row,index)=><button key={clean(row.Orden)} onClick={()=>onSelect(row)}><b>{index+1}</b><span>{clean(row.Orden)}</span></button>)}</div><button className="clear-route" onClick={()=>setRouteOrderIds([])}>Quitar ruta</button></div>}<OrdersMap rows={filtered} routeRows={responsible?routeRows:[]} onSelect={onSelect}/></section>
+    <section className="section-block"><div className="section-heading route-heading"><div><span className="eyebrow">Ubicación</span><h2>Mapa operativo</h2></div><div className="route-actions"><span className="muted">{located} con coordenadas</span>{responsible&&<button className="route-button" onClick={buildRoute} disabled={!located}><Route size={17}/> Ruta recomendada</button>}</div></div>{responsible&&routeRows.length>0&&<div className="route-panel"><div><strong>Ruta diaria · {routeRows.length} órdenes</strong><span>Prioriza conexiones ZCON con más de 4 días y completa con órdenes cercanas.</span></div><div className="route-stops">{routeRows.map((row,index)=><button key={clean(row.Orden)} onClick={()=>onSelect(row)}><b>{index+1}</b><span>{clean(row.Orden)}</span></button>)}</div><button className="clear-route" onClick={()=>setRouteOrderIds([])}>Quitar ruta</button></div>}<OrdersMap rows={filtered} routeRows={responsible?routeRows:[]} labelsEnabled={Boolean(responsible)} onSelect={onSelect}/></section>
 
     <section className="orders-section"><div className="section-heading"><div><span className="eyebrow">Ejecución</span><h2>Órdenes por tipo</h2></div><span className="muted">{filtered.length} visibles</span></div><div className="orders-list">{filtered.map((row,idx)=>{const quality=getInfoQuality(row);const days=elapsedDays(row['Fecha de creación']);const routePosition=routePositionById.get(clean(row.Orden));return <button className={`order-card ${routePosition?'route-selected':''}`} key={`${clean(row.Orden)}-${idx}`} onClick={()=>onSelect(row)}><div className="urgency-strip"/><div className="order-card-main"><div className="order-title-line"><span className="order-number">OT {clean(row.Orden)||'—'}</span><span className="order-badges">{routePosition&&<span className="route-chip">Ruta {routePosition}</span>}{days>=0&&<span className="age-chip">{days} d</span>}<span className={`status-chip ${quality.toLowerCase().replace('í','i')}`}>{quality}</span></span></div><div className="type-chip">{orderType(row)}</div><div className="activity-title">{activity(row)}</div><div className="order-location"><MapPinned size={14}/> {clean(row.Distrito)||'Sin distrito'}{clean(row.Calle)?` · ${clean(row.Calle)}`:''}</div></div><ChevronRight className="chevron" size={22}/></button>})}{!filtered.length&&<div className="empty">No hay órdenes que coincidan con los filtros actuales.</div>}</div></section>
   </main>
