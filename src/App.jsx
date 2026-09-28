@@ -16,6 +16,10 @@ import { personnelByResponsible } from './personnel'
 // consume innecesariamente la cuota gratuita. Diez minutos mantiene una vista
 // suficientemente fresca y deja el botón manual para actualizaciones urgentes.
 const AUTO_REFRESH_MS = 10 * 60_000
+const ROUTE_MAX_STOPS = 15
+const ZDESC_EXPECTED_RETURN_RATE = 0.70
+const ROUTE_COMPACT_INCREMENT_METERS = 6_000
+const ROUTE_DISTANCE_BUDGET_METERS = 45_000
 const INITIAL_FILTERS = {
   company: '',
   responsible: '',
@@ -243,6 +247,66 @@ function distanceBetween(left,right){
   const a=Math.sin(deltaLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(deltaLon/2)**2
   return 6371000*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))
 }
+function deadlineDays(row){
+  const deadline=parseOrderDate(row.DEADLINE)
+  if(!deadline)return null
+  const today=new Date()
+  const start=Date.UTC(today.getFullYear(),today.getMonth(),today.getDate())
+  const end=Date.UTC(deadline.getFullYear(),deadline.getMonth(),deadline.getDate())
+  return Math.round((end-start)/86400000)
+}
+function routeTier(row){
+  const type=orderType(row).toUpperCase()
+  const remaining=deadlineDays(row)
+  if(type==='ZCON'&&remaining!==null&&remaining<=0)return 0
+  if(type==='ZREC'&&(remaining===null||remaining<=0))return 1
+  if(type==='ZCON')return 2
+  if(type==='ZREC')return 3
+  if(type==='ZDES'||type==='ZDESC')return 4
+  return 5
+}
+function compareOperationalUrgency(left,right){
+  const tierDifference=routeTier(left)-routeTier(right)
+  if(tierDifference)return tierDifference
+  const leftDeadline=deadlineDays(left)
+  const rightDeadline=deadlineDays(right)
+  if(leftDeadline!==null||rightDeadline!==null){
+    if(leftDeadline===null)return 1
+    if(rightDeadline===null)return -1
+    if(leftDeadline!==rightDeadline)return leftDeadline-rightDeadline
+  }
+  return elapsedDays(right['Fecha de creación'])-elapsedDays(left['Fecha de creación'])
+}
+function routeDistanceMeters(rows){
+  return rows.slice(1).reduce((total,row,index)=>total+distanceBetween(rows[index],row),0)
+}
+function routeCenter(rows){
+  if(!rows.length)return null
+  return {
+    'Latitud recomendada':rows.reduce((sum,row)=>sum+Number(row['Latitud recomendada']),0)/rows.length,
+    'Longitud recomendada':rows.reduce((sum,row)=>sum+Number(row['Longitud recomendada']),0)/rows.length,
+  }
+}
+function nearestDistance(row,rows){
+  return rows.length?Math.min(...rows.map(candidate=>distanceBetween(row,candidate))):0
+}
+function sequenceFromAnchor(rows,anchor=null){
+  if(rows.length<2)return rows.slice()
+  const pending=rows.slice()
+  const ordered=[]
+  let current=anchor
+  while(pending.length){
+    let nearestIndex=0
+    if(current){
+      for(let index=1;index<pending.length;index+=1){
+        if(distanceBetween(current,pending[index])<distanceBetween(current,pending[nearestIndex]))nearestIndex=index
+      }
+    }
+    current=pending.splice(nearestIndex,1)[0]
+    ordered.push(current)
+  }
+  return ordered
+}
 function sequenceByProximity(rows){
   if(rows.length<2)return rows
   const pending=rows.slice(1)
@@ -257,27 +321,54 @@ function sequenceByProximity(rows){
   }
   return ordered
 }
-function recommendDailyRoute(rows,limit=15){
+function recommendDailyRoute(rows,limit=ROUTE_MAX_STOPS){
   const located=rows.filter(row=>validCoordinate(row['Latitud recomendada'],row['Longitud recomendada']))
   if(!located.length)return []
-  const overdueConnections=located.filter(row=>orderType(row).toUpperCase()==='ZCON'&&elapsedDays(row['Fecha de creación'])>4).sort((a,b)=>elapsedDays(b['Fecha de creación'])-elapsedDays(a['Fecha de creación']))
-  const selected=overdueConnections.slice(0,limit)
+  const ordered=located.slice().sort(compareOperationalUrgency)
+  const selected=[]
   const selectedIds=new Set(selected.map(row=>clean(row.Orden)))
-  const remaining=located.filter(row=>!selectedIds.has(clean(row.Orden)))
-  if(!selected.length&&remaining.length){
-    remaining.sort((a,b)=>orderPriority(a)-orderPriority(b)||elapsedDays(b['Fecha de creación'])-elapsedDays(a['Fecha de creación']))
-    selected.push(remaining.shift())
+  const add=row=>{selected.push(row);selectedIds.add(clean(row.Orden))}
+
+  // Las ZCON y ZREC conservan su prioridad operativa aunque impliquen más distancia.
+  for(const row of ordered.filter(row=>routeTier(row)<=3)){
+    if(selected.length>=limit)break
+    add(row)
   }
-  while(selected.length<limit&&remaining.length){
-    let nearestIndex=0
-    let nearestDistance=Infinity
-    remaining.forEach((candidate,index)=>{
-      const distance=Math.min(...selected.map(chosen=>distanceBetween(chosen,candidate)))
-      if(distance<nearestDistance){nearestDistance=distance;nearestIndex=index}
+
+  // El 70 % se usa como costo esperado de volver a la zona ZDESC, nunca como
+  // predicción de qué orden individual generará una reconexión.
+  const criticalCenter=routeCenter(selected)
+  const disconnections=ordered.filter(row=>routeTier(row)===4)
+  while(selected.length<limit&&disconnections.length){
+    disconnections.sort((left,right)=>{
+      const leftScore=nearestDistance(left,selected)+(criticalCenter?ZDESC_EXPECTED_RETURN_RATE*distanceBetween(left,criticalCenter):0)
+      const rightScore=nearestDistance(right,selected)+(criticalCenter?ZDESC_EXPECTED_RETURN_RATE*distanceBetween(right,criticalCenter):0)
+      return leftScore-rightScore
     })
-    selected.push(remaining.splice(nearestIndex,1)[0])
+    const candidate=disconnections.shift()
+    const increment=nearestDistance(candidate,selected)
+    const projected=routeDistanceMeters(sequenceByProximity([...selected,candidate]))
+    if(selected.length&&increment>ROUTE_COMPACT_INCREMENT_METERS&&projected>ROUTE_DISTANCE_BUDGET_METERS)break
+    add(candidate)
   }
-  return sequenceByProximity(selected)
+
+  // Las órdenes restantes solo completan la jornada si mantienen una zona
+  // compacta; por eso la recomendación puede contener menos de 15 paradas.
+  const remaining=ordered.filter(row=>!selectedIds.has(clean(row.Orden)))
+  while(selected.length<limit&&remaining.length){
+    remaining.sort((left,right)=>nearestDistance(left,selected)-nearestDistance(right,selected)||compareOperationalUrgency(left,right))
+    const candidate=remaining.shift()
+    const increment=nearestDistance(candidate,selected)
+    const projected=routeDistanceMeters(sequenceByProximity([...selected,candidate]))
+    if(selected.length&&increment>ROUTE_COMPACT_INCREMENT_METERS&&projected>ROUTE_DISTANCE_BUDGET_METERS)break
+    add(candidate)
+  }
+
+  const immediate=selected.filter(row=>routeTier(row)<=1).sort(compareOperationalUrgency)
+  const morningDisconnections=sequenceFromAnchor(selected.filter(row=>routeTier(row)===4),immediate.at(-1)||null)
+  const scheduledCritical=selected.filter(row=>routeTier(row)===2||routeTier(row)===3).sort(compareOperationalUrgency)
+  const other=sequenceFromAnchor(selected.filter(row=>routeTier(row)===5),scheduledCritical.at(-1)||morningDisconnections.at(-1)||immediate.at(-1)||null)
+  return [...immediate,...morningDisconnections,...scheduledCritical,...other]
 }
 
 function OrdersMap({ rows, routeRows, onSelect }) {
@@ -322,6 +413,11 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
   const filteredById=useMemo(()=>new Map(filtered.map(row=>[clean(row.Orden),row])),[filtered])
   const routeRows=useMemo(()=>routeOrderIds.map(id=>filteredById.get(id)).filter(Boolean),[routeOrderIds,filteredById])
   const routePositionById=useMemo(()=>new Map(routeRows.map((row,index)=>[clean(row.Orden),index+1])),[routeRows])
+  const routeStats=useMemo(()=>({
+    urgent:routeRows.filter(row=>routeTier(row)<=1).length,
+    disconnections:routeRows.filter(row=>routeTier(row)===4).length,
+    straightKm:(routeDistanceMeters(routeRows)/1000).toFixed(1),
+  }),[routeRows])
   const buildRoute=()=>setRouteOrderIds(recommendDailyRoute(filtered).map(row=>clean(row.Orden)))
 
   return <main className="app-shell">
@@ -335,7 +431,7 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
 
     <section className="filters-card secondary-filters"><div className="field"><label>Actividad / trabajo</label><select value={selectedActivity} onChange={e=>updateFilters({selectedActivity:e.target.value})}><option value="">Todas las actividades</option>{activities.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="selection-summary"><strong>{filtered.length}</strong><span>órdenes visibles</span><small>{selectedTypes.length?selectedTypes.join(' + '):'Todos los tipos'}{selectedActivity?` · ${selectedActivity}`:''}</small></div></section>
 
-    <section className="section-block"><div className="section-heading route-heading"><div><span className="eyebrow">Ubicación</span><h2>Mapa operativo</h2></div><div className="route-actions"><span className="muted">{located} con coordenadas</span>{responsible&&<button className="route-button" onClick={buildRoute} disabled={!located}><Route size={17}/> Ruta recomendada</button>}</div></div>{responsible&&routeRows.length>0&&<div className="route-panel"><div><strong>Ruta diaria · {routeRows.length} órdenes</strong><span>Prioriza conexiones ZCON con más de 4 días y completa con órdenes cercanas.</span></div><div className="route-stops">{routeRows.map((row,index)=><button key={clean(row.Orden)} onClick={()=>onSelect(row)}><b>{index+1}</b><span>{clean(row.Orden)}</span></button>)}</div><button className="clear-route" onClick={()=>setRouteOrderIds([])}>Quitar ruta</button></div>}<OrdersMap rows={filtered} routeRows={responsible?routeRows:[]} onSelect={onSelect}/></section>
+    <section className="section-block"><div className="section-heading route-heading"><div><span className="eyebrow">Ubicación</span><h2>Mapa operativo</h2></div><div className="route-actions"><span className="muted">{located} con coordenadas</span>{responsible&&<button className="route-button" onClick={buildRoute} disabled={!located}><Route size={17}/> Ruta recomendada</button>}</div></div>{responsible&&routeRows.length>0&&<div className="route-panel"><div className="route-summary"><strong>Jornada sugerida · {routeRows.length} paradas</strong><span>{routeStats.urgent} urgentes · {routeStats.disconnections} desconexiones · {routeStats.straightKm} km en línea recta</span><span>Calculada con la carga del {formatUpdateDate(metadata.uploadedAt)}.</span><small>Heurística operativa, no ruta vial: prioriza fechas límite y urgencia disponibles, ubica ZDESC temprano y usa un costo esperado de retorno del 70 %. No incorpora tráfico, duración del trabajo, horario ni punto de salida.</small></div><div className="route-stops">{routeRows.map((row,index)=><button key={clean(row.Orden)} onClick={()=>onSelect(row)}><b>{index+1}</b><span>{clean(row.Orden)}</span></button>)}</div><button className="clear-route" onClick={()=>setRouteOrderIds([])}>Quitar ruta</button></div>}<OrdersMap rows={filtered} routeRows={responsible?routeRows:[]} onSelect={onSelect}/></section>
 
     <section className="orders-section"><div className="section-heading"><div><span className="eyebrow">Ejecución</span><h2>Órdenes por tipo</h2></div><span className="muted">{filtered.length} visibles</span></div><div className="orders-list">{filtered.map((row,idx)=>{const quality=getInfoQuality(row);const days=elapsedDays(row['Fecha de creación']);const routePosition=routePositionById.get(clean(row.Orden));return <button className={`order-card ${routePosition?'route-selected':''}`} key={`${clean(row.Orden)}-${idx}`} onClick={()=>onSelect(row)}><div className="urgency-strip"/><div className="order-card-main"><div className="order-title-line"><span className="order-number">OT {clean(row.Orden)||'—'}</span><span className="order-badges">{routePosition&&<span className="route-chip">Ruta {routePosition}</span>}{days>=0&&<span className="age-chip">{days} d</span>}<span className={`status-chip ${quality.toLowerCase().replace('í','i')}`}>{quality}</span></span></div><div className="type-chip">{orderType(row)}</div><div className="activity-title">{activity(row)}</div><div className="order-location"><MapPinned size={14}/> {clean(row.Distrito)||'Sin distrito'}{clean(row.Calle)?` · ${clean(row.Calle)}`:''}</div></div><ChevronRight className="chevron" size={22}/></button>})}{!filtered.length&&<div className="empty">No hay órdenes que coincidan con los filtros actuales.</div>}</div></section>
   </main>
