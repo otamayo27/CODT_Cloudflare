@@ -24,6 +24,7 @@ En **Settings → Variables and Secrets**, agrega como secretos:
 - `VIEWER_PASSWORD`: contraseña compartida de consulta.
 - `ADMIN_PASSWORD`: contraseña distinta para cargar la base.
 - `SESSION_SECRET`: cadena aleatoria de al menos 32 caracteres.
+- `ORS_API_KEY`: token de openrouteservice utilizado por el Worker para calcular matrices y geometrías viales. Si falta, la aplicación utiliza la heurística geográfica de respaldo.
 
 No copies los valores de ejemplo ni guardes contraseñas reales en GitHub.
 

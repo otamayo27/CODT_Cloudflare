@@ -28,12 +28,14 @@ Por eso puede recomendar menos de 15 paradas. Estos umbrales son proxies de comp
 
 ## Limitaciones
 
-La línea del mapa conecta coordenadas con distancia geodésica. No representa carreteras ni una ruta vial óptima. Actualmente no se dispone de:
+Cuando `ORS_API_KEY` está configurada, el Worker consulta openrouteservice para obtener una matriz de tiempos viales, reordena cada grupo sin alterar las prioridades operativas y solicita la geometría que sigue las calles. La respuesta queda en KV durante 48 horas, identificada por fecha de carga, órdenes, coordenadas y nivel de prioridad.
+
+Si la clave no existe o el servicio falla, la aplicación conserva automáticamente la heurística geográfica y dibuja una línea discontinua entre coordenadas. La ruta vial tampoco constituye una optimización completa de jornada porque actualmente no se dispone de:
 
 - duración estimada por tipo de trabajo;
 - horario de inicio y fin de la dupla;
 - punto de salida y retorno;
-- tiempos por carretera, tráfico o restricciones viales;
+- tráfico en tiempo real o restricciones viales extraordinarias;
 - hora exacta de vencimiento de ZREC;
 - reconexiones generadas después de la carga diaria.
 

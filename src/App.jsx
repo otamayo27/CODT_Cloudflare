@@ -27,6 +27,7 @@ const INITIAL_FILTERS = {
   selectedTypes: [],
   selectedActivity: '',
 }
+const EMPTY_ROUTE_PLAN = { ids: [], geometry: [], source: '', distanceMeters: 0, durationSeconds: 0, notice: '' }
 
 async function apiJson(url, options = {}) {
   const response = await fetch(url, {
@@ -371,14 +372,15 @@ function recommendDailyRoute(rows,limit=ROUTE_MAX_STOPS){
   return [...immediate,...morningDisconnections,...scheduledCritical,...other]
 }
 
-function OrdersMap({ rows, routeRows, onSelect }) {
+function OrdersMap({ rows, routeRows, routeGeometry, onSelect }) {
   const mapped=useMemo(()=>rows.filter(r=>validCoordinate(r['Latitud recomendada'],r['Longitud recomendada'])),[rows])
   const routePositions=useMemo(()=>routeRows.map(row=>[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]),[routeRows])
   const routeIndex=useMemo(()=>new Map(routeRows.map((row,index)=>[clean(row.Orden),index+1])),[routeRows])
   const legend=useMemo(()=>[...new Set(mapped.map(orderType))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[mapped])
   const renderMarker=(row,idx)=>{const color=typeColor(orderType(row));const routeNumber=routeIndex.get(clean(row.Orden));const inRoute=Boolean(routeNumber);return <CircleMarker key={`${clean(row.Orden)}-${idx}`} pane={isNewService(row)?'new-service-markers':'markerPane'} center={[Number(row['Latitud recomendada']),Number(row['Longitud recomendada'])]} radius={inRoute?10:isNewService(row)?8:7} pathOptions={{color:inRoute?'#111827':'#fff',weight:inRoute?4:isNewService(row)?3:2,fillColor:color.marker,fillOpacity:1}} eventHandlers={{click:()=>onSelect(row)}}>{inRoute&&<Tooltip permanent direction="top" offset={[0,-10]} opacity={1} className="route-map-label">{routeNumber}</Tooltip>}<Popup><div className="popup"><span className="popup-order">OT {clean(row.Orden)}</span>{inRoute&&<span className="popup-route">Parada {routeNumber} de {routeRows.length}</span>}<strong style={{color:color.ink}}>{orderType(row)}</strong><span>{activity(row)}</span><button onClick={()=>onSelect(row)}>Ver detalle</button></div></Popup></CircleMarker>}
   const fitRows=routeRows.length?routeRows:mapped
-  return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={fitRows}/><Pane name="new-service-markers" style={{zIndex:640}}/>{routePositions.length>1&&<Polyline positions={routePositions} pathOptions={{color:'#111827',weight:4,opacity:.72,dashArray:'8 8'}}/>}{mapped.filter(row=>!isNewService(row)).map(renderMarker)}{mapped.filter(isNewService).map(renderMarker)}</MapContainer></div>
+  const displayedRoute=routeGeometry?.length>1?routeGeometry:routePositions
+  return <div className="map-card"><div className="map-legend" aria-label="Colores por tipo de orden">{legend.map(type=><span className="map-legend-item" key={type}><i style={{background:typeColor(type).marker}}/>{type}</span>)}</div><MapContainer center={[13.69,-89.22]} zoom={9} scrollWheelZoom className="map"><TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/><FitMap rows={fitRows}/><Pane name="new-service-markers" style={{zIndex:640}}/>{displayedRoute.length>1&&<Polyline positions={displayedRoute} pathOptions={{color:routeGeometry?.length?'#175cd3':'#111827',weight:4,opacity:.78,dashArray:routeGeometry?.length?undefined:'8 8'}}/>}{mapped.filter(row=>!isNewService(row)).map(renderMarker)}{mapped.filter(isNewService).map(renderMarker)}</MapContainer></div>
 }
 
 function TypeSummary({ rows, selectedTypes, onToggle, onClear }) {
@@ -388,9 +390,11 @@ function TypeSummary({ rows, selectedTypes, onToggle, onClear }) {
   return <section className="type-dashboard" aria-label="Órdenes por tipo"><button className={`type-card type-color-all ${selectedTypes.length===0?'active':''}`} onClick={onClear}><Layers3 size={18}/><strong>{rows.length}</strong><span>Todas</span></button>{data.map(([type,count])=><button key={type} style={typeStyle(type)} className={`type-card categorized ${selectedTypes.includes(type)?'active':''}`} aria-pressed={selectedTypes.includes(type)} onClick={()=>onToggle(type)}><span className="type-code">{type.replace('Orden ','').slice(0,18)}</span><strong>{count}</strong><span>pendientes</span></button>)}</section>
 }
 
-function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh, refreshing, onAdmin, filters, setFilters, routeOrderIds, setRouteOrderIds }) {
+function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh, refreshing, onAdmin, filters, setFilters, routePlan, setRoutePlan }) {
   const {company,responsible,query,selectedTypes,selectedActivity}=filters
-  const updateFilters=changes=>{setFilters(current=>({...current,...changes}));setRouteOrderIds([])}
+  const [routeLoading,setRouteLoading]=useState(false)
+  const clearRoute=()=>setRoutePlan({...EMPTY_ROUTE_PLAN})
+  const updateFilters=changes=>{setFilters(current=>({...current,...changes}));clearRoute()}
 
   const companies=useMemo(()=>[...new Set(rows.map(r=>clean(r.Empresa)||'DESCONOCIDO'))].sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})),[rows])
   const companyRows=useMemo(()=>rows.filter(r=>!company||(clean(r.Empresa)||'DESCONOCIDO')===company),[rows,company])
@@ -411,14 +415,27 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
 
   const located=filtered.filter(r=>validCoordinate(r['Latitud recomendada'],r['Longitud recomendada'])).length
   const filteredById=useMemo(()=>new Map(filtered.map(row=>[clean(row.Orden),row])),[filtered])
-  const routeRows=useMemo(()=>routeOrderIds.map(id=>filteredById.get(id)).filter(Boolean),[routeOrderIds,filteredById])
+  const routeRows=useMemo(()=>routePlan.ids.map(id=>filteredById.get(id)).filter(Boolean),[routePlan.ids,filteredById])
   const routePositionById=useMemo(()=>new Map(routeRows.map((row,index)=>[clean(row.Orden),index+1])),[routeRows])
   const routeStats=useMemo(()=>({
     urgent:routeRows.filter(row=>routeTier(row)<=1).length,
     disconnections:routeRows.filter(row=>routeTier(row)===4).length,
-    straightKm:(routeDistanceMeters(routeRows)/1000).toFixed(1),
-  }),[routeRows])
-  const buildRoute=()=>setRouteOrderIds(recommendDailyRoute(filtered).map(row=>clean(row.Orden)))
+    distanceKm:((routePlan.distanceMeters||routeDistanceMeters(routeRows))/1000).toFixed(1),
+    travelMinutes:routePlan.durationSeconds?Math.round(routePlan.durationSeconds/60):null,
+  }),[routeRows,routePlan.distanceMeters,routePlan.durationSeconds])
+  const buildRoute=async()=>{
+    const suggested=recommendDailyRoute(filtered)
+    const fallback={...EMPTY_ROUTE_PLAN,ids:suggested.map(row=>clean(row.Orden)),source:'heuristic'}
+    if(suggested.length<2){setRoutePlan(fallback);return}
+    setRouteLoading(true)
+    try{
+      const result=await apiJson('/api/route',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({uploadedAt:metadata.uploadedAt||'',stops:suggested.map(row=>({id:clean(row.Orden),lat:Number(row['Latitud recomendada']),lon:Number(row['Longitud recomendada']),tier:routeTier(row)}))})})
+      if(!result.available){setRoutePlan({...fallback,notice:result.reason||'El servicio vial no está disponible.'});return}
+      setRoutePlan({ids:result.orderIds,geometry:result.geometry||[],source:'openrouteservice',distanceMeters:result.distanceMeters||0,durationSeconds:result.durationSeconds||0,notice:result.cached?'Ruta vial recuperada de la caché diaria.':''})
+    }catch(error){
+      setRoutePlan({...fallback,notice:`No fue posible consultar la red vial: ${error.message} Se usó la heurística geográfica.`})
+    }finally{setRouteLoading(false)}
+  }
 
   return <main className="app-shell">
     <header className="mobile-topbar"><div className="brand-line"><div className="mini-logo"><MapPinned size={22}/></div><div><span className="eyebrow">GeoOperación</span><h1>Órdenes pendientes</h1></div></div><div className="top-actions"><button className="install-button admin-button" onClick={onAdmin}><LockKeyhole size={16}/> Administrar base</button><button className={`icon-button ${refreshing?'spinning':''}`} onClick={onRefresh}><RefreshCw size={18}/></button>{canInstall&&<button className="install-button" onClick={onInstall}><Smartphone size={16}/> Instalar</button>}</div></header>
@@ -431,7 +448,7 @@ function OrdersPage({ rows, metadata, onSelect, canInstall, onInstall, onRefresh
 
     <section className="filters-card secondary-filters"><div className="field"><label>Actividad / trabajo</label><select value={selectedActivity} onChange={e=>updateFilters({selectedActivity:e.target.value})}><option value="">Todas las actividades</option>{activities.map(item=><option key={item} value={item}>{item}</option>)}</select></div><div className="selection-summary"><strong>{filtered.length}</strong><span>órdenes visibles</span><small>{selectedTypes.length?selectedTypes.join(' + '):'Todos los tipos'}{selectedActivity?` · ${selectedActivity}`:''}</small></div></section>
 
-    <section className="section-block"><div className="section-heading route-heading"><div><span className="eyebrow">Ubicación</span><h2>Mapa operativo</h2></div><div className="route-actions"><span className="muted">{located} con coordenadas</span>{responsible&&<button className="route-button" onClick={buildRoute} disabled={!located}><Route size={17}/> Ruta recomendada</button>}</div></div>{responsible&&routeRows.length>0&&<div className="route-panel"><div className="route-summary"><strong>Jornada sugerida · {routeRows.length} paradas</strong><span>{routeStats.urgent} urgentes · {routeStats.disconnections} desconexiones · {routeStats.straightKm} km en línea recta</span><span>Calculada con la carga del {formatUpdateDate(metadata.uploadedAt)}.</span><small>Heurística operativa, no ruta vial: prioriza fechas límite y urgencia disponibles, ubica ZDESC temprano y usa un costo esperado de retorno del 70 %. No incorpora tráfico, duración del trabajo, horario ni punto de salida.</small></div><div className="route-stops">{routeRows.map((row,index)=><button key={clean(row.Orden)} onClick={()=>onSelect(row)}><b>{index+1}</b><span>{clean(row.Orden)}</span></button>)}</div><button className="clear-route" onClick={()=>setRouteOrderIds([])}>Quitar ruta</button></div>}<OrdersMap rows={filtered} routeRows={responsible?routeRows:[]} onSelect={onSelect}/></section>
+    <section className="section-block"><div className="section-heading route-heading"><div><span className="eyebrow">Ubicación</span><h2>Mapa operativo</h2></div><div className="route-actions"><span className="muted">{located} con coordenadas</span>{responsible&&<button className="route-button" onClick={buildRoute} disabled={!located||routeLoading}><Route size={17}/> {routeLoading?'Calculando vía…':'Ruta recomendada'}</button>}</div></div>{responsible&&routeRows.length>0&&<div className="route-panel"><div className="route-summary"><strong>Jornada sugerida · {routeRows.length} paradas</strong><span>{routeStats.urgent} urgentes · {routeStats.disconnections} desconexiones · {routeStats.distanceKm} km {routePlan.source==='openrouteservice'?'por carretera':'en línea recta'}{routeStats.travelMinutes?` · ${routeStats.travelMinutes} min de traslado`:''}</span><span>Calculada con la carga del {formatUpdateDate(metadata.uploadedAt)}.</span><small>{routePlan.source==='openrouteservice'?'Secuencia influenciada por tiempos de conducción de openrouteservice; conserva las prioridades operativas.':'Heurística geográfica de respaldo; no representa calles.'} No incorpora tráfico en tiempo real, duración del trabajo, horario ni punto de salida.</small>{routePlan.notice&&<small className="route-notice">{routePlan.notice}</small>}</div><div className="route-stops">{routeRows.map((row,index)=><button key={clean(row.Orden)} onClick={()=>onSelect(row)}><b>{index+1}</b><span>{clean(row.Orden)}</span></button>)}</div><button className="clear-route" onClick={clearRoute}>Quitar ruta</button></div>}<OrdersMap rows={filtered} routeRows={responsible?routeRows:[]} routeGeometry={responsible?routePlan.geometry:[]} onSelect={onSelect}/></section>
 
     <section className="orders-section"><div className="section-heading"><div><span className="eyebrow">Ejecución</span><h2>Órdenes por tipo</h2></div><span className="muted">{filtered.length} visibles</span></div><div className="orders-list">{filtered.map((row,idx)=>{const quality=getInfoQuality(row);const days=elapsedDays(row['Fecha de creación']);const routePosition=routePositionById.get(clean(row.Orden));return <button className={`order-card ${routePosition?'route-selected':''}`} key={`${clean(row.Orden)}-${idx}`} onClick={()=>onSelect(row)}><div className="urgency-strip"/><div className="order-card-main"><div className="order-title-line"><span className="order-number">OT {clean(row.Orden)||'—'}</span><span className="order-badges">{routePosition&&<span className="route-chip">Ruta {routePosition}</span>}{days>=0&&<span className="age-chip">{days} d</span>}<span className={`status-chip ${quality.toLowerCase().replace('í','i')}`}>{quality}</span></span></div><div className="type-chip">{orderType(row)}</div><div className="activity-title">{activity(row)}</div><div className="order-location"><MapPinned size={14}/> {clean(row.Distrito)||'Sin distrito'}{clean(row.Calle)?` · ${clean(row.Calle)}`:''}</div></div><ChevronRight className="chevron" size={22}/></button>})}{!filtered.length&&<div className="empty">No hay órdenes que coincidan con los filtros actuales.</div>}</div></section>
   </main>
@@ -470,7 +487,7 @@ export default function App() {
   const [adminOpen,setAdminOpen]=useState(false)
   const [selected,setSelected]=useState(null)
   const [filters,setFilters]=useState(INITIAL_FILTERS)
-  const [routeOrderIds,setRouteOrderIds]=useState([])
+  const [routePlan,setRoutePlan]=useState(EMPTY_ROUTE_PLAN)
   const [error,setError]=useState('')
   const [refreshing,setRefreshing]=useState(false)
   const {canInstall,install}=useInstallPrompt()
@@ -491,5 +508,5 @@ export default function App() {
   if(error)return <ErrorScreen message={error} onRetry={()=>refresh(true)}/>
   if(!rows)return <LoadingScreen/>
   if(selected)return <DetailPage row={selected} onBack={()=>setSelected(null)}/>
-  return <><OrdersPage rows={rows} metadata={metadata} onSelect={setSelected} canInstall={canInstall} onInstall={install} onRefresh={()=>refresh(false)} refreshing={refreshing} onAdmin={()=>setAdminOpen(true)} filters={filters} setFilters={setFilters} routeOrderIds={routeOrderIds} setRouteOrderIds={setRouteOrderIds}/>{adminOpen&&<AdminPanel initialRole={role} onClose={()=>setAdminOpen(false)} onUploaded={async()=>{setRole('admin');await refresh(false)}}/>}</>
+  return <><OrdersPage rows={rows} metadata={metadata} onSelect={setSelected} canInstall={canInstall} onInstall={install} onRefresh={()=>refresh(false)} refreshing={refreshing} onAdmin={()=>setAdminOpen(true)} filters={filters} setFilters={setFilters} routePlan={routePlan} setRoutePlan={setRoutePlan}/>{adminOpen&&<AdminPanel initialRole={role} onClose={()=>setAdminOpen(false)} onUploaded={async()=>{setRole('admin');setRoutePlan({...EMPTY_ROUTE_PLAN});await refresh(false)}}/>}</>
 }

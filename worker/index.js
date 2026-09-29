@@ -2,6 +2,7 @@ const COOKIE = 'geo_session'
 const TTL_SECONDS = 60 * 60 * 24 * 30
 const encoder = new TextEncoder()
 const CURRENT_CACHE_TTL_MS = 5 * 60 * 1000
+const ROUTE_CACHE_TTL_SECONDS = 60 * 60 * 48
 let currentCache = null
 let currentCacheExpiresAt = 0
 
@@ -142,6 +143,104 @@ async function handleOrders(request, env) {
   return json({ ...current, viewerRole: role })
 }
 
+async function routeCacheKey(payload) {
+  const canonical = JSON.stringify({ uploadedAt: payload.uploadedAt || '', stops: payload.stops })
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(canonical))
+  return `route:${base64Url(digest)}`
+}
+
+function nearestByRoad(pending, ordered, durations) {
+  if (!pending.length) return []
+  const result = []
+  let current = ordered.at(-1)?.sourceIndex ?? null
+  const candidates = pending.slice()
+  while (candidates.length) {
+    let best = 0
+    if (current !== null) {
+      for (let index = 1; index < candidates.length; index += 1) {
+        const candidateDuration = durations[current]?.[candidates[index].sourceIndex] ?? Infinity
+        const bestDuration = durations[current]?.[candidates[best].sourceIndex] ?? Infinity
+        if (candidateDuration < bestDuration) best = index
+      }
+    }
+    const next = candidates.splice(best, 1)[0]
+    result.push(next)
+    current = next.sourceIndex
+  }
+  return result
+}
+
+function sequenceRoadStops(stops, durations) {
+  const indexed = stops.map((stop, sourceIndex) => ({ ...stop, sourceIndex }))
+  const immediate = indexed.filter(stop => stop.tier <= 1)
+  const disconnections = nearestByRoad(indexed.filter(stop => stop.tier === 4), immediate, durations)
+  const scheduledCritical = indexed.filter(stop => stop.tier === 2 || stop.tier === 3)
+  const fixed = [...immediate, ...disconnections, ...scheduledCritical]
+  const other = nearestByRoad(indexed.filter(stop => stop.tier === 5), fixed, durations)
+  return [...fixed, ...other]
+}
+
+async function orsRequest(url, body, apiKey) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: apiKey, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result?.error?.message || result?.message || `openrouteservice respondió HTTP ${response.status}.`)
+  return result
+}
+
+async function handleRoute(request, env) {
+  if (request.method !== 'POST') return json({ error: 'Método no permitido.' }, 405)
+  if (!await sessionRole(request, env)) return json({ error: 'Se requiere la contraseña de acceso.' }, 401)
+  if (!env.ORS_API_KEY) return json({ available: false, reason: 'ORS_API_KEY no está configurada; se mantiene la heurística geográfica.' })
+
+  const payload = await request.json()
+  const stops = Array.isArray(payload.stops) ? payload.stops : []
+  if (stops.length < 2 || stops.length > 15) return json({ error: 'La ruta vial requiere entre 2 y 15 paradas.' }, 400)
+  const valid = stops.every(stop =>
+    String(stop.id || '').trim()
+    && Number.isFinite(Number(stop.lat))
+    && Number.isFinite(Number(stop.lon))
+    && Number(stop.lat) >= -90 && Number(stop.lat) <= 90
+    && Number(stop.lon) >= -180 && Number(stop.lon) <= 180
+    && Number.isInteger(Number(stop.tier))
+  )
+  if (!valid) return json({ error: 'La ruta contiene coordenadas o prioridades no válidas.' }, 400)
+
+  const key = await routeCacheKey({ uploadedAt: payload.uploadedAt, stops })
+  const cached = await env.DATA.get(key, { type: 'json' })
+  if (cached) return json({ ...cached, cached: true })
+
+  const locations = stops.map(stop => [Number(stop.lon), Number(stop.lat)])
+  const matrix = await orsRequest(
+    'https://api.openrouteservice.org/v2/matrix/driving-car',
+    { locations, metrics: ['duration', 'distance'], units: 'm' },
+    env.ORS_API_KEY
+  )
+  if (!Array.isArray(matrix.durations)) throw new Error('openrouteservice no devolvió una matriz vial válida.')
+  const sequenced = sequenceRoadStops(stops, matrix.durations)
+  const coordinates = sequenced.map(stop => [Number(stop.lon), Number(stop.lat)])
+  const directions = await orsRequest(
+    'https://api.openrouteservice.org/v2/directions/driving-car/geojson',
+    { coordinates, instructions: false, preference: 'recommended' },
+    env.ORS_API_KEY
+  )
+  const feature = directions?.features?.[0]
+  if (!feature?.geometry?.coordinates) throw new Error('openrouteservice no devolvió una geometría vial válida.')
+  const result = {
+    available: true,
+    source: 'openrouteservice',
+    orderIds: sequenced.map(stop => String(stop.id)),
+    geometry: feature.geometry.coordinates.map(([lon, lat]) => [lat, lon]),
+    distanceMeters: Number(feature.properties?.summary?.distance) || 0,
+    durationSeconds: Number(feature.properties?.summary?.duration) || 0,
+  }
+  await env.DATA.put(key, JSON.stringify(result), { expirationTtl: ROUTE_CACHE_TTL_SECONDS })
+  return json({ ...result, cached: false })
+}
+
 async function handleUpload(request, env) {
   if (request.method !== 'POST') return json({ error: 'Método no permitido.' }, 405)
   if (await sessionRole(request, env) !== 'admin') {
@@ -233,6 +332,7 @@ async function handleApi(request, env) {
     if (pathname === '/api/session') return await handleSession(request, env)
     if (pathname === '/api/orders') return await handleOrders(request, env)
     if (pathname === '/api/upload') return await handleUpload(request, env)
+    if (pathname === '/api/route') return await handleRoute(request, env)
     return json({ error: 'Ruta no encontrada.' }, 404)
   } catch (error) {
     console.error(error)
